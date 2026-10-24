@@ -53,7 +53,7 @@ function home() {
         <div class="bar"><i style="width:${p}%"></i></div>
         <span class="num">${S.done} / ${S.total}</span>
       </div>` : `
-      <label class="btn primary">${fileInput}Add photos</label>`}
+      <label class="btn primary">${fileInput}Select photos</label>`}
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
   </main>`;
 }
@@ -63,7 +63,7 @@ function seriesScreen() {
   const k = keepers().length, d = deletes().length;
   return `
   <div class="top"><h2>Kadar</h2>
-    <label class="icon" aria-label="Add photos">${fileInput}${ICON.plus}</label>
+    <label class="icon" aria-label="Select photos">${fileInput}${ICON.plus}</label>
     <button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
   <div class="summary">
     <div class="stat"><b class="num">${all}</b><span>Photos</span></div>
