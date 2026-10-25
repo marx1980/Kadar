@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from './editor.js';
 import { loadRecentEdit, saveRecentEdit } from './recent.js';
 
 const $app = document.getElementById('app');
@@ -173,6 +173,8 @@ function editorScreen() {
   ];
   const focusPerson = edits.focusPerson;
   const focusMask = edits.focusMask;
+  const focusMode = edits.focusMode || 'subject';
+  const depthMap = edits.focusDepthMap;
   return `
   <div class="top">
     <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
@@ -194,20 +196,36 @@ function editorScreen() {
     <button class="btn" data-act="editorNext" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
   </div>` : ''}
   <div class="focus-tools">
-    <span>${S.focusBrush ? 'Paint the mask · ' : 'Tap photo to focus · '}${focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
-    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
-      <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusPerson == null ? 'disabled' : ''}>
-    </label>
-    <label class="adjust"><span>Edge softness<output data-value="focusFeather">${Number(edits.focusFeather ?? 0)} px</output></span>
-      <input type="range" data-focus-feather min="0" max="24" step="1" value="${edits.focusFeather ?? 0}" ${focusPerson == null ? 'disabled' : ''}>
-    </label>
+    <span>${S.focusBrush ? 'Paint the mask · ' : 'Tap photo to focus · '}${focusMode === 'depth'
+      ? edits.focusDepth == null ? 'No focus plane selected' : 'Depth plane selected'
+      : focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
     <div class="focus-actions">
-      <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
-      <button class="btn" data-act="focusBrush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
-      <button class="btn" data-act="clearFocus" ${focusPerson == null ? 'disabled' : ''}>Reset focus</button>
-      ${S.editorFocusing ? '<span role="status">Finding focus…</span>' : ''}
+      <div class="seg" role="group" aria-label="Focus method">
+        <button data-act="focusMode" data-v="subject" aria-pressed="${focusMode === 'subject'}">Subject</button>
+        <button data-act="focusMode" data-v="depth" aria-pressed="${focusMode === 'depth'}">Depth</button>
+      </div>
+      ${focusMode === 'depth' ? `
+        <button class="btn" data-act="estimateDepth" ${S.editorFocusing ? 'disabled' : ''}>${S.editorFocusing ? 'Estimating…' : depthMap ? 'Re-estimate depth' : 'Estimate depth'}</button>
+        <button class="btn" data-act="depthOverlay" aria-pressed="${Boolean(edits.depthOverlay)}" ${depthMap ? '' : 'disabled'}>Depth map</button>
+      ` : `
+        <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
+        <button class="btn" data-act="focusBrush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
+      `}
+      <button class="btn" data-act="clearFocus" ${focusMode === 'depth' ? edits.focusDepth == null ? 'disabled' : '' : focusPerson == null ? 'disabled' : ''}>Reset focus</button>
+      ${S.editorFocusing ? `<span role="status">${focusMode === 'depth' ? 'Estimating depth…' : 'Finding focus…'}</span>` : ''}
     </div>
-    ${S.focusBrush && focusMask ? `<div class="focus-actions mask-brush">
+    ${focusMode === 'depth' ? '<p class="depth-note">Depth estimation runs on this device. First use downloads the model; your photo is not uploaded.</p>' : ''}
+    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
+      <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusMode === 'depth'
+        ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
+        : focusPerson == null ? 'disabled' : ''}>
+    </label>
+    <label class="adjust"><span>${focusMode === 'depth' ? 'Depth falloff' : 'Edge softness'}<output data-value="focusFeather">${Number(focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0)}${focusMode === 'depth' ? '%' : ' px'}</output></span>
+      <input type="range" data-focus-feather min="${focusMode === 'depth' ? 2 : 0}" max="${focusMode === 'depth' ? 40 : 24}" step="${focusMode === 'depth' ? 2 : 1}" value="${focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0}" ${focusMode === 'depth'
+        ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
+        : focusPerson == null ? 'disabled' : ''}>
+    </label>
+    ${focusMode === 'subject' && S.focusBrush && focusMask ? `<div class="focus-actions mask-brush">
       <div class="seg" role="group" aria-label="Brush effect">
         <button data-act="focusBrushTarget" data-v="sharp" aria-pressed="${S.focusBrushTarget === 'sharp'}">Keep sharp</button>
         <button data-act="focusBrushTarget" data-v="blur" aria-pressed="${S.focusBrushTarget === 'blur'}">Blur</button>
@@ -635,7 +653,7 @@ async function renderEditorPreview() {
     }
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     if (token !== S.previewToken || S.screen !== 'editor') return;
-    applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
+    applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight, false);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
@@ -669,46 +687,70 @@ function makeMaskCanvas(mask, softness = 0) {
   return canvas;
 }
 
-function applyFocusEffect(ctx, edits, crop, imageWidth, imageHeight) {
-  const mask = edits?.focusMask;
-  const focusPerson = edits?.focusPerson;
-  if (!mask || focusPerson == null || (!edits.focusOverlay && Number(edits.focusBlur) <= 0)) return;
-
+function applyFocusEffect(ctx, edits, crop, imageWidth, imageHeight, showDepthOverlay = true) {
+  const depthMap = edits?.focusDepthMap;
+  const depthFocus = edits?.focusMode === 'depth' && depthMap && Number.isFinite(edits.focusDepth);
+  const mask = edits?.focusMode === 'depth'
+    ? depthFocus ? depthFocusMask(depthMap, edits.focusDepth, Number(edits.focusDepthFalloff ?? 12) / 100) : null
+    : edits?.focusMask;
+  const focusPerson = edits?.focusMode === 'depth' ? depthFocus : edits?.focusPerson;
   const width = ctx.canvas.width, height = ctx.canvas.height;
-  const blur = Math.max(0, Math.min(24, Number(edits.focusBlur) || 0)) *
-    Math.max(imageWidth, imageHeight) / 1200;
-  const margin = Math.ceil(blur * 2);
-  const blurred = document.createElement('canvas');
-  blurred.width = width + margin * 2;
-  blurred.height = height + margin * 2;
-  const blurCtx = blurred.getContext('2d');
-  blurCtx.filter = `blur(${blur}px)`;
-  blurCtx.drawImage(ctx.canvas, margin, margin);
-  blurCtx.filter = 'none';
+  const maskSx = crop.x * (mask?.width || 1) / imageWidth;
+  const maskSy = crop.y * (mask?.height || 1) / imageHeight;
+  const maskSw = crop.width * (mask?.width || 1) / imageWidth;
+  const maskSh = crop.height * (mask?.height || 1) / imageHeight;
+  const depthSx = crop.x * (depthMap?.width || 1) / imageWidth;
+  const depthSy = crop.y * (depthMap?.height || 1) / imageHeight;
+  const depthSw = crop.width * (depthMap?.width || 1) / imageWidth;
+  const depthSh = crop.height * (depthMap?.height || 1) / imageHeight;
 
-  const softness = Math.max(0, Math.min(24, Number(edits.focusFeather) || 0)) * mask.width / imageWidth;
-  const maskCanvas = makeMaskCanvas(mask, softness);
-  const sx = crop.x * mask.width / imageWidth;
-  const sy = crop.y * mask.height / imageHeight;
-  const sw = crop.width * mask.width / imageWidth;
-  const sh = crop.height * mask.height / imageHeight;
-  ctx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
-  ctx.drawImage(maskCanvas, sx, sy, sw, sh, 0, 0, width, height);
-  ctx.globalCompositeOperation = 'destination-over';
-  ctx.drawImage(blurred, margin, margin, width, height, 0, 0, width, height);
-  ctx.globalCompositeOperation = 'source-over';
+  if (mask && focusPerson != null &&
+      (Number(edits.focusBlur) > 0 || (edits.focusOverlay && !depthFocus))) {
+    const blur = Math.max(0, Math.min(24, Number(edits.focusBlur) || 0)) *
+      Math.max(imageWidth, imageHeight) / 1200;
+    const margin = Math.ceil(blur * 2);
+    const blurred = document.createElement('canvas');
+    blurred.width = width + margin * 2;
+    blurred.height = height + margin * 2;
+    const blurCtx = blurred.getContext('2d');
+    blurCtx.filter = `blur(${blur}px)`;
+    blurCtx.drawImage(ctx.canvas, margin, margin);
+    blurCtx.filter = 'none';
 
-  if (edits.focusOverlay) {
+    const softness = depthFocus ? 0 :
+      Math.max(0, Math.min(24, Number(edits.focusFeather) || 0)) * mask.width / imageWidth;
+    const maskCanvas = makeMaskCanvas(mask, softness);
+    ctx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
+    ctx.drawImage(maskCanvas, maskSx, maskSy, maskSw, maskSh, 0, 0, width, height);
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.drawImage(blurred, margin, margin, width, height, 0, 0, width, height);
+    ctx.globalCompositeOperation = 'source-over';
+
+    if (edits.focusOverlay && !depthFocus) {
+      const overlay = document.createElement('canvas');
+      overlay.width = mask.width;
+      overlay.height = mask.height;
+      const overlayCtx = overlay.getContext('2d');
+      overlayCtx.fillStyle = '#F2C230';
+      overlayCtx.fillRect(0, 0, overlay.width, overlay.height);
+      overlayCtx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
+      overlayCtx.drawImage(maskCanvas, 0, 0);
+      ctx.globalAlpha = 0.3;
+      ctx.drawImage(overlay, maskSx, maskSy, maskSw, maskSh, 0, 0, width, height);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  if (showDepthOverlay && edits?.focusMode === 'depth' && edits.depthOverlay && depthMap) {
     const overlay = document.createElement('canvas');
-    overlay.width = mask.width;
-    overlay.height = mask.height;
+    overlay.width = depthMap.width;
+    overlay.height = depthMap.height;
     const overlayCtx = overlay.getContext('2d');
-    overlayCtx.fillStyle = '#F2C230';
-    overlayCtx.fillRect(0, 0, overlay.width, overlay.height);
-    overlayCtx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
-    overlayCtx.drawImage(maskCanvas, 0, 0);
-    ctx.globalAlpha = 0.3;
-    ctx.drawImage(overlay, sx, sy, sw, sh, 0, 0, width, height);
+    const pixels = overlayCtx.createImageData(depthMap.width, depthMap.height);
+    pixels.data.set(colorizeDepth(depthMap));
+    overlayCtx.putImageData(pixels, 0, 0);
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(overlay, depthSx, depthSy, depthSw, depthSh, 0, 0, width, height);
     ctx.globalAlpha = 1;
   }
 }
@@ -726,6 +768,43 @@ async function getFocusMask(it) {
   }
 }
 
+async function getDepthMap(it) {
+  if (it.adjustments?.focusDepthMap) return it.adjustments.focusDepthMap;
+  const { estimateDepth } = await import('./depth.js');
+  const bitmap = await createEditorBitmap(it, 512);
+  try {
+    const input = document.createElement('canvas');
+    input.width = bitmap.width;
+    input.height = bitmap.height;
+    input.getContext('2d').drawImage(bitmap, 0, 0);
+    const depth = await estimateDepth(input);
+    it.adjustments.focusDepthMap = depth;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    return depth;
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function estimateDepthForCurrent() {
+  if (S.editorFocusing) return;
+  const it = editorItem();
+  it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+  S.editorFocusing = true;
+  S.editorError = '';
+  render();
+  try {
+    await getDepthMap(it);
+    it.adjustments.depthOverlay = true;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+  } catch (e) {
+    S.editorError = 'Could not estimate depth. Check your connection for the first model download, then try a smaller photo.';
+  } finally {
+    S.editorFocusing = false;
+    render();
+  }
+}
+
 async function selectFocus(event, photo) {
   if (S.editorFocusing) return;
   const it = editorItem();
@@ -736,15 +815,28 @@ async function selectFocus(event, photo) {
   S.editorError = '';
   render();
   try {
-    const mask = await getFocusMask(it);
-    const crop = cropRect(it.w, it.h, it.adjustments?.crop);
-    const sourceX = (crop.x + x * crop.width) / it.w;
-    const sourceY = (crop.y + y * crop.height) / it.h;
-    const focusPerson = isForegroundAt(mask, sourceX, sourceY);
-    it.adjustments.focusPerson = focusPerson;
-    it.adjustments.focusBlur ??= 12;
+    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    const sourceWidth = it.adjustments?.fusion?.width || it.sourceW || it.w;
+    const sourceHeight = it.adjustments?.fusion?.height || it.sourceH || it.h;
+    const crop = cropRect(sourceWidth, sourceHeight, it.adjustments?.crop);
+    const sourceX = (crop.x + x * crop.width) / sourceWidth;
+    const sourceY = (crop.y + y * crop.height) / sourceHeight;
+    if (it.adjustments.focusMode === 'depth') {
+      const depth = await getDepthMap(it);
+      it.adjustments.focusDepth = depthAt(depth, sourceX, sourceY);
+      it.adjustments.focusBlur ??= 12;
+      it.adjustments.focusDepthFalloff ??= 12;
+    } else {
+      const mask = await getFocusMask(it);
+      const focusPerson = isForegroundAt(mask, sourceX, sourceY);
+      it.adjustments.focusPerson = focusPerson;
+      it.adjustments.focusBlur ??= 12;
+    }
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
   } catch (e) {
-    S.editorError = 'Could not find the subject mask. Connect to the internet once, then try again.';
+    S.editorError = it.adjustments?.focusMode === 'depth'
+      ? 'Could not estimate depth. Check your connection for the first model download, then try a smaller photo.'
+      : 'Could not find the subject mask. Connect to the internet once, then try again.';
   } finally {
     S.editorFocusing = false;
     render();
@@ -906,9 +998,10 @@ $app.addEventListener('input', e => {
   const focusFeather = e.target.closest('[data-focus-feather]');
   if (focusFeather && S.screen === 'editor') {
     const it = editorItem();
-    it.adjustments.focusFeather = Number(focusFeather.value);
+    const depthMode = it.adjustments?.focusMode === 'depth';
+    it.adjustments[depthMode ? 'focusDepthFalloff' : 'focusFeather'] = Number(focusFeather.value);
     const output = $app.querySelector('[data-value="focusFeather"]');
-    if (output) output.textContent = `${focusFeather.value} px`;
+    if (output) output.textContent = `${focusFeather.value}${depthMode ? '%' : ' px'}`;
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     requestAnimationFrame(renderEditorPreview);
     return;
@@ -1005,6 +1098,23 @@ $app.addEventListener('click', e => {
     it.adjustments.focusOverlay = !it.adjustments.focusOverlay;
     render();
   }
+  else if (a === 'focusMode') {
+    const it = editorItem();
+    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    it.adjustments.focusMode = t.dataset.v;
+    S.editorError = '';
+    S.focusBrush = false;
+    S.focusPointer = null;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'estimateDepth') estimateDepthForCurrent();
+  else if (a === 'depthOverlay') {
+    const it = editorItem();
+    it.adjustments.depthOverlay = !it.adjustments.depthOverlay;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
   else if (a === 'focusBrush') {
     S.focusBrush = !S.focusBrush;
     if (S.focusBrush) editorItem().adjustments.focusOverlay = true;
@@ -1017,10 +1127,15 @@ $app.addEventListener('click', e => {
   }
   else if (a === 'clearFocus') {
     const it = editorItem();
-    it.adjustments.focusPerson = null;
-    it.adjustments.focusOverlay = false;
+    if (it.adjustments.focusMode === 'depth') {
+      it.adjustments.focusDepth = null;
+    } else {
+      it.adjustments.focusPerson = null;
+      it.adjustments.focusOverlay = false;
+    }
     S.focusBrush = false;
     S.focusPointer = null;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
   }
   else if (a === 'crop') {

@@ -16,6 +16,52 @@ export function isForegroundAt(mask, x, y) {
   return mask.data[py * mask.width + px] >= 0.5;
 }
 
+export function depthAt(depth, x, y) {
+  if (!depth || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) ||
+      depth.width <= 0 || depth.height <= 0 || !depth.data ||
+      depth.data.length !== depth.width * depth.height || !Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new RangeError('A valid depth map and normalized point are required');
+  }
+  const px = Math.max(0, Math.min(depth.width - 1, Math.floor(x * depth.width)));
+  const py = Math.max(0, Math.min(depth.height - 1, Math.floor(y * depth.height)));
+  return depth.data[py * depth.width + px];
+}
+
+export function depthFocusMask(depth, focusDepth, falloff = 0.12) {
+  if (!depth || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) ||
+      depth.width <= 0 || depth.height <= 0 || !depth.data ||
+      depth.data.length !== depth.width * depth.height || !Number.isFinite(focusDepth) ||
+      focusDepth < 0 || focusDepth > 1 || !Number.isFinite(falloff) || falloff < 0 || falloff > 1) {
+    throw new RangeError('A valid depth map, focus depth and falloff are required');
+  }
+  const transition = Math.max(0.015, falloff);
+  const data = new Float32Array(depth.data.length);
+  for (let i = 0; i < data.length; i++) {
+    const distance = Math.abs(depth.data[i] - focusDepth);
+    const t = Math.max(0, Math.min(1, distance / transition));
+    data[i] = 1 - t * t * (3 - 2 * t);
+  }
+  return { width: depth.width, height: depth.height, data };
+}
+
+export function colorizeDepth(depth) {
+  if (!depth || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) ||
+      depth.width <= 0 || depth.height <= 0 || !depth.data ||
+      depth.data.length !== depth.width * depth.height) {
+    throw new RangeError('A valid depth map is required');
+  }
+  const data = new Uint8ClampedArray(depth.data.length * 4);
+  for (let i = 0; i < depth.data.length; i++) {
+    const value = Math.max(0, Math.min(1, depth.data[i]));
+    const p = i * 4;
+    data[p] = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * value - 3))));
+    data[p + 1] = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * value - 2))));
+    data[p + 2] = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * value - 1))));
+    data[p + 3] = 255;
+  }
+  return data;
+}
+
 export function paintMask(mask, x, y, radius, value) {
   if (!mask || !Number.isInteger(mask.width) || !Number.isInteger(mask.height) ||
       mask.width <= 0 || mask.height <= 0 || !mask.data || mask.data.length !== mask.width * mask.height ||

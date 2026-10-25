@@ -175,7 +175,7 @@ Build the photo editor as the main product, with recovery and cleanup integrated
 ### Phase 3 — Improve on-device recovery and focus tools
 
 - Keep sharpest-frame choice, burst fusion and best-face recovery available only when a series supplies reference frames; explain that moving subjects may ghost during fusion.
-- Improve mask-based focus blur and evaluate Depth Anything V2 Small for actual depth-aware focus, bokeh, overlay and mask correction.
+- Improve mask-based focus blur and evaluate Depth Anything V2 Small for actual depth-aware focus, bokeh, overlay and mask correction. **Implemented:** on-device depth estimation, tap-selected depth focus, depth-weighted blur and a colour depth overlay; validate model downloads, quality and performance on supported phones before treating the estimates as reliable.
 - Clearly communicate limitations and let users inspect every result.
 - **Done when:** real-photo tests establish where each effect works, where it fails and what safeguards or fallbacks are needed.
 
