@@ -5,6 +5,39 @@ export function sharpestFrameIndex(items) {
     (Number.isFinite(items[best].sharpRel) ? items[best].sharpRel : 0) ? index : best, 0);
 }
 
+export function bestFaceSources(items, frameIndex) {
+  const target = items[frameIndex];
+  if (!target) return [];
+  const validBox = box => box && [box.x, box.y, box.w, box.h].every(Number.isFinite) && box.w > 0 && box.h > 0;
+  return (target.faces || []).map((face, faceIndex) => {
+    if (!validBox(face.box) || !Number.isFinite(face.yaw)) return null;
+    const center = { x: face.box.x + face.box.w / 2, y: face.box.y + face.box.h / 2 };
+    const quality = candidate => Number.isFinite(candidate.sharp) && Number.isFinite(candidate.closed)
+      ? Math.max(0, candidate.sharp) * (1 - Math.max(0, Math.min(1, candidate.closed)) * 0.7)
+      : 0;
+    const targetScore = quality(face);
+    let best = null;
+    let bestScore = targetScore * 1.1;
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      if (itemIndex === frameIndex) continue;
+      for (let sourceFaceIndex = 0; sourceFaceIndex < (items[itemIndex].faces || []).length; sourceFaceIndex++) {
+        const source = items[itemIndex].faces[sourceFaceIndex];
+        if (!validBox(source.box) || !Number.isFinite(source.yaw) || !Number.isFinite(source.closed) || source.closed >= 0.45) continue;
+        const sourceCenter = { x: source.box.x + source.box.w / 2, y: source.box.y + source.box.h / 2 };
+        const distance = Math.hypot(center.x - sourceCenter.x, center.y - sourceCenter.y);
+        const scale = source.box.w / face.box.w;
+        if (distance > 0.12 || scale < 0.65 || scale > 1.55 || Math.abs(face.yaw - source.yaw) > 20) continue;
+        const score = quality(source);
+        if (score > bestScore) {
+          best = { frameIndex: itemIndex, sourceFaceIndex };
+          bestScore = score;
+        }
+      }
+    }
+    return best ? { faceIndex, ...best } : null;
+  }).filter(Boolean);
+}
+
 export function cropRect(width, height, preset = 'original') {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new RangeError('Image dimensions must be positive');
