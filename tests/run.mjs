@@ -138,7 +138,6 @@ test('editor: pick sharpest selects highest relative sharpness and keeps first o
   assert.equal(sharpestFrameIndex([]), -1);
 });
 
-// ---------- grouping and ranking ----------
 test('editor: crop presets return centered rectangles at the requested ratio', () => {
   assert.deepEqual(cropRect(400, 300, 'original'), { x: 0, y: 0, width: 400, height: 300 });
   assert.deepEqual(cropRect(400, 300, 'square'), { x: 50, y: 0, width: 300, height: 300 });
@@ -150,6 +149,7 @@ test('editor: crop presets return centered rectangles at the requested ratio', (
   assert.throws(() => cropRect(0, 300), RangeError);
 });
 
+// ---------- grouping and ranking ----------
 const emb = (base, noise, seed) => base.map((v, i) => v + noise * Math.sin(seed * 13 + i * 7));
 const E1 = Array.from({ length: 32 }, (_, i) => Math.sin(i));
 const E2 = Array.from({ length: 32 }, (_, i) => Math.cos(i * 3));
