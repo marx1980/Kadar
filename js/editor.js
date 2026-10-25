@@ -16,6 +16,32 @@ export function isForegroundAt(mask, x, y) {
   return mask.data[py * mask.width + px] >= 0.5;
 }
 
+export function paintMask(mask, x, y, radius, foreground) {
+  if (!mask || !Number.isInteger(mask.width) || !Number.isInteger(mask.height) ||
+      mask.width <= 0 || mask.height <= 0 || !mask.data || mask.data.length !== mask.width * mask.height ||
+      !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 ||
+      !Number.isFinite(radius) || radius <= 0 || typeof foreground !== 'boolean') {
+    throw new RangeError('A valid mask, normalized point, radius and foreground value are required');
+  }
+  const centerX = x * (mask.width - 1), centerY = y * (mask.height - 1);
+  const radiusPixels = radius * Math.max(mask.width, mask.height);
+  const target = foreground ? 1 : 0;
+  const left = Math.max(0, Math.floor(centerX - radiusPixels));
+  const right = Math.min(mask.width - 1, Math.ceil(centerX + radiusPixels));
+  const top = Math.max(0, Math.floor(centerY - radiusPixels));
+  const bottom = Math.min(mask.height - 1, Math.ceil(centerY + radiusPixels));
+  for (let py = top; py <= bottom; py++) {
+    for (let px = left; px <= right; px++) {
+      const distance = Math.hypot(px - centerX, py - centerY) / radiusPixels;
+      if (distance >= 1) continue;
+      const index = py * mask.width + px;
+      const strength = 1 - distance;
+      mask.data[index] += (target - mask.data[index]) * strength;
+    }
+  }
+  return mask;
+}
+
 export function estimateTranslation(reference, candidate, width, height, maxShift = 4) {
   if (!reference || !candidate || reference.length !== width * height || candidate.length !== width * height ||
       !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
