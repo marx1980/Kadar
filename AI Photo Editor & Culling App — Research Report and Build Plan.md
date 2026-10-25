@@ -142,20 +142,20 @@ Editing is the front door, with series review as a secondary workflow. **Choose 
 | Optional AI-assisted motion-blur repair with explicit consent and generated-result labeling | Future decision | Cloud |
 | Full photo-library access and direct deletion | Future platform decision; likely native iOS app | Device |
 
-All photos stay on the phone unless you press an AI button; then only the selected photo and its chosen reference frames are sent.
+Currently, photos stay on the phone; optional cloud AI repair is not implemented. If added, it should send only the photo and reference frames the user selects after explicit confirmation.
 
 ## Updated build plan
 
 Build the photo editor as the main product, with recovery and cleanup integrated as optional series workflows. The app now has an editor-led home screen, direct editing that bypasses culling analysis, a locally resumable standalone edit session, series recovery actions, and explicit user control over delete suggestions. The static web app still requires users to pick photos each time they start a new selection; recent-session storage is only a convenience. AI-assisted motion-blur repair and full-library access are not implemented. Continue with the phases below, validating each on real photos rather than treating a feature checklist as completion.
 
-### Phase 0 — Re-architect the interface and app state
+### Phase 0 — Re-architect the interface and app state (implemented)
 
 - Lead with "Choose photos to edit"; keep "Review a series" secondary and explain that the browser cannot browse the library in the background.
 - Make direct editing independent of culling models and preserve the standalone editor's separate photo collection and navigation.
 - Save and restore the latest standalone edit session locally, while making clear that browser storage may be cleared or restricted and is not a backup.
 - Reuse editor rendering across both paths; show sharpest-frame, fusion and face-recovery tools only when sibling frames are available.
 - Keep originals unchanged; label cleanup as suggestions and require the user to delete selected photos in Photos.
-- **Done when:** a person can choose photos, edit and save a copy or resume a recent session without entering culling; the series review and recovery workflow remains available separately.
+- **Implemented:** a person can choose photos, edit and save a copy or resume a recent session without entering culling; the series review and recovery workflow remains available separately.
 
 ### Phase 1 — Complete the everyday photo editor
 
@@ -199,8 +199,7 @@ Build the photo editor as the main product, with recovery and cleanup integrated
 
 ### Open decisions
 
-- [ ] Web app (no direct delete, EXIF may be lost) or native iOS app (direct delete, full metadata, Portrait depth maps)
-- [ ] Whether a native iOS app is justified for persistent photo-library access and direct deletion; browser recent sessions do not provide this access
+- [ ] Whether to remain a web app (no direct delete, EXIF may be lost) or build a native iOS app (direct delete, full metadata, Portrait depth maps, persistent photo-library access)
 - [ ] Cloud provider and a monthly spending cap
 - [ ] Whether to build optional AI-assisted motion-blur reduction, and how to distinguish generated detail from recovered detail
 - [ ] Save repaired keepers as copies or replace originals
