@@ -152,14 +152,14 @@ function editorScreen() {
     </div>
   </div>
   <div class="stage editor-stage">
-  <div class="editor-photo" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
+    <div class="editor-photo" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
   </div>
   <div class="crop-set"><span>Crop</span><div class="seg" role="group" aria-label="Crop aspect ratio">
   ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2']].map(([value, label]) =>
-    `<button data-act="crop" data-v="${value}" aria-pressed="${(edits.crop || 'original') === value}">${label}</button>`).join('')}
+  `<button data-act="crop" data-v="${value}" aria-pressed="${(edits.crop || 'original') === value}">${label}</button>`).join('')}
   </div></div>
   ${controls.map(([key, label, min, max, step, value]) => `
     <label class="adjust"><span>${label}<output data-value="${key}">${value}</output></span>
@@ -429,7 +429,7 @@ $app.addEventListener('click', e => {
       S.compare = 'after';
       S.editorError = '';
       const it = S.series[S.si].items[S.fi];
-      it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+      it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
       render();
     }
   }

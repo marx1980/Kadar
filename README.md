@@ -4,7 +4,7 @@ Phone web app that groups photos into series, checks each frame and proposes whi
 
 Phase 1 of the plan: culling. Runs entirely on the phone; photos are never uploaded.
 
-The first Phase 2 editor tools are available from a reviewed frame: before/after preview, exposure, contrast, colour saturation, sharpening, pick the sharpest frame in a series, and save-as-copy. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
+The first Phase 2 editor tools are available from a reviewed frame: before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, pick the sharpest frame in a series, and save-as-copy. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
 
 ## How it works
 

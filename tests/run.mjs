@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, cropRect, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -139,6 +139,17 @@ test('editor: pick sharpest selects highest relative sharpness and keeps first o
 });
 
 // ---------- grouping and ranking ----------
+test('editor: crop presets return centered rectangles at the requested ratio', () => {
+  assert.deepEqual(cropRect(400, 300, 'original'), { x: 0, y: 0, width: 400, height: 300 });
+  assert.deepEqual(cropRect(400, 300, 'square'), { x: 50, y: 0, width: 300, height: 300 });
+  assert.deepEqual(cropRect(400, 300, 'portrait'), { x: 80, y: 0, width: 240, height: 300 });
+  const landscape = cropRect(400, 300, 'landscape');
+  assert.equal(landscape.width, 400);
+  assert.ok(Math.abs(landscape.height - 400 / 1.5) < 1e-9);
+  assert.ok(Math.abs(landscape.y - (300 - landscape.height) / 2) < 1e-9);
+  assert.throws(() => cropRect(0, 300), RangeError);
+});
+
 const emb = (base, noise, seed) => base.map((v, i) => v + noise * Math.sin(seed * 13 + i * 7));
 const E1 = Array.from({ length: 32 }, (_, i) => Math.sin(i));
 const E2 = Array.from({ length: 32 }, (_, i) => Math.cos(i * 3));
