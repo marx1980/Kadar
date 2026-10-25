@@ -16,6 +16,34 @@ export function isForegroundAt(mask, x, y) {
   return mask.data[py * mask.width + px] >= 0.5;
 }
 
+export function paintMask(mask, x, y, radius, value) {
+  if (!mask || !Number.isInteger(mask.width) || !Number.isInteger(mask.height) ||
+      mask.width <= 0 || mask.height <= 0 || !mask.data || mask.data.length !== mask.width * mask.height ||
+      !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(radius) || radius <= 0 ||
+      !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new RangeError('A valid mask, normalized point, brush radius and mask value are required');
+  }
+
+  const centerX = Math.max(0, Math.min(1, x)) * (mask.width - 1);
+  const centerY = Math.max(0, Math.min(1, y)) * (mask.height - 1);
+  const innerRadius = radius * 0.7;
+  const minX = Math.max(0, Math.floor(centerX - radius));
+  const maxX = Math.min(mask.width - 1, Math.ceil(centerX + radius));
+  const minY = Math.max(0, Math.floor(centerY - radius));
+  const maxY = Math.min(mask.height - 1, Math.ceil(centerY + radius));
+
+  for (let py = minY; py <= maxY; py++) {
+    for (let px = minX; px <= maxX; px++) {
+      const distance = Math.hypot(px - centerX, py - centerY);
+      if (distance > radius) continue;
+      const blend = distance <= innerRadius ? 1 : (radius - distance) / (radius - innerRadius);
+      const index = py * mask.width + px;
+      mask.data[index] += (value - mask.data[index]) * blend;
+    }
+  }
+  return mask;
+}
+
 export function estimateTranslation(reference, candidate, width, height, maxShift = 4) {
   if (!reference || !candidate || reference.length !== width * height || candidate.length !== width * height ||
       !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
