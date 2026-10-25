@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, cropRect, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, medianFuse, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -136,6 +136,28 @@ test('editor: malformed pixel dimensions are rejected', () => {
 test('editor: pick sharpest selects highest relative sharpness and keeps first on ties', () => {
   assert.equal(sharpestFrameIndex([{ sharpRel: 0.8 }, { sharpRel: 1 }, { sharpRel: 1 }]), 1);
   assert.equal(sharpestFrameIndex([]), -1);
+});
+
+test('editor: burst alignment estimates small translations', () => {
+  const width = 24, height = 20;
+  const reference = Float32Array.from({ length: width * height }, (_, i) => (i * 37 + (i >> 2) * 19) % 251);
+  const candidate = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    candidate[y * width + x] = reference[Math.max(0, Math.min(height - 1, y - 1)) * width +
+      Math.max(0, Math.min(width - 1, x + 2))];
+  }
+  assert.deepEqual(estimateTranslation(reference, candidate, width, height), { x: -2, y: 1 });
+  assert.throws(() => estimateTranslation(reference, candidate, width, height - 1), RangeError);
+});
+
+test('editor: burst fusion takes a per-channel median and rejects outlier frames', () => {
+  const fused = medianFuse([
+    new Uint8ClampedArray([10, 80, 20, 255]),
+    new Uint8ClampedArray([20, 90, 30, 255]),
+    new Uint8ClampedArray([250, 100, 40, 255]),
+  ], 1, 1);
+  assert.deepEqual([...fused], [20, 90, 30, 255]);
+  assert.throws(() => medianFuse([new Uint8ClampedArray(4)], 1, 1), RangeError);
 });
 
 test('editor: best face source matches position and angle, preferring sharp open eyes', () => {

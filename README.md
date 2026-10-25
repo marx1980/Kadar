@@ -4,7 +4,7 @@ Phone web app that groups photos into series, checks each frame and proposes whi
 
 Phase 1 of the plan: culling. Runs entirely on the phone; photos are never uploaded.
 
-The first Phase 2 editor tools are available from a reviewed frame: before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, pick the sharpest frame in a series, and save-as-copy. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
+The first Phase 2 editor tools are available from a reviewed frame: before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, pick the sharpest frame in a series, and save-as-copy. **Fuse frames** aligns and median-blends up to five similarly framed shots for still scenes; moving subjects can ghost, so inspect the result before saving. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
 
 ## How it works
 
@@ -26,7 +26,7 @@ The first Phase 2 editor tools are available from a reviewed frame: before/after
 - `js/rank.js`: grouping, flags, ranking
 - `js/metrics.js`: image metrics
 - `js/exif.js`: capture time
-- `js/editor.js`: crop, pixel adjustments and sibling face matching
+- `js/editor.js`: crop, pixel adjustments, burst alignment/fusion and sibling face matching
 - `libs/mediapipe/`: MediaPipe Tasks Vision 1.1.1 (Apache-2.0), vendored
 - `sw.js`: offline cache; models are cached after the first run
 
