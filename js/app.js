@@ -786,9 +786,10 @@ $app.addEventListener('click', e => {
   else if (a === 'edit') {
     const it = S.series[S.si].items[S.fi];
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    S.maskBrush = false;
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.screen = 'review'; render(); }
+  else if (a === 'editorBack') { S.maskBrush = false; S.maskStroke = null; S.screen = 'review'; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
@@ -842,6 +843,8 @@ $app.addEventListener('click', e => {
     const sharpest = sharpestFrameIndex(S.series[S.si].items);
     if (sharpest >= 0) {
       S.fi = sharpest;
+      S.maskBrush = false;
+      S.maskStroke = null;
       S.compare = 'after';
       S.editorError = '';
       const it = S.series[S.si].items[S.fi];
