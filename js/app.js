@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, bestFaceSources, cropRect, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, medianFuse, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -22,6 +22,7 @@ const S = {
   sheet: false,
   compare: 'after',
   editorSaving: false,
+  editorFusing: false,
   editorError: '',
   previewToken: 0,
 };
@@ -135,6 +136,7 @@ function editorScreen() {
   const sharpest = sharpestFrameIndex(series.items);
   const faceMatches = bestFaceSources(series.items, S.fi);
   const faceSources = it.adjustments?.faceSources || [];
+  const fusion = it.adjustments?.fusion;
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
   const crop = cropRect(it.w, it.h, edits.crop);
   const aspect = crop.width / crop.height;
@@ -169,6 +171,7 @@ function editorScreen() {
     </label>`).join('')}
   ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
   <div class="editor-actions">
+    <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (series.items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse frames'}</button>
     <button class="btn" data-act="pickSharpest" ${sharpest === S.fi ? 'disabled' : ''}>Pick sharpest</button>
     ${faceSources.length
       ? `<button class="btn" data-act="clearFaces">Undo faces</button>`
@@ -332,18 +335,114 @@ async function renderFaceRepairs(ctx, target, crop, imageWidth, imageHeight, can
   }
 }
 
+function grayThumbnail(pixels, width, height, thumbWidth, thumbHeight) {
+  const gray = new Float32Array(thumbWidth * thumbHeight);
+  for (let y = 0; y < thumbHeight; y++) {
+    const sy = Math.min(height - 1, Math.floor((y + 0.5) * height / thumbHeight));
+    for (let x = 0; x < thumbWidth; x++) {
+      const sx = Math.min(width - 1, Math.floor((x + 0.5) * width / thumbWidth));
+      const p = (sy * width + sx) * 4;
+      gray[y * thumbWidth + x] = 0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2];
+    }
+  }
+  return gray;
+}
+
+async function makeBurstFusion(series, target) {
+  const targetIndex = series.items.indexOf(target);
+  const aspect = (target.sourceW || target.w) / (target.sourceH || target.h);
+  const selected = [target, ...series.items
+    .filter(item => item !== target &&
+      Math.abs(((item.sourceW || item.w) / (item.sourceH || item.h)) / aspect - 1) < 0.03)
+    .sort((a, b) => Math.abs(series.items.indexOf(a) - targetIndex) - Math.abs(series.items.indexOf(b) - targetIndex))
+    .slice(0, 4)];
+  if (selected.length < 2) throw new Error('No matching sibling frames');
+
+  const sourceW = target.sourceW || target.w, sourceH = target.sourceH || target.h;
+  const scale = Math.min(1, 1600 / Math.max(sourceW, sourceH));
+  const width = Math.max(1, Math.round(sourceW * scale));
+  const height = Math.max(1, Math.round(sourceH * scale));
+  const thumbWidth = Math.max(16, Math.round(width * 128 / Math.max(width, height)));
+  const thumbHeight = Math.max(16, Math.round(height * 128 / Math.max(width, height)));
+  const loadPixels = async item => {
+    const bitmap = await createImageBitmap(item.file, {
+      resizeWidth: width, resizeHeight: height, resizeQuality: 'high',
+    });
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      return ctx.getImageData(0, 0, width, height).data;
+    } finally {
+      bitmap.close();
+    }
+  };
+
+  const frames = [];
+  let referenceGray;
+  for (const item of selected) {
+    const pixels = await loadPixels(item);
+    const gray = grayThumbnail(pixels, width, height, thumbWidth, thumbHeight);
+    if (!frames.length) {
+      frames.push(pixels);
+      referenceGray = gray;
+      continue;
+    }
+    const shift = estimateTranslation(referenceGray, gray, thumbWidth, thumbHeight, 3);
+    const shiftX = Math.round(shift.x * width / thumbWidth);
+    const shiftY = Math.round(shift.y * height / thumbHeight);
+    const aligned = new Uint8ClampedArray(pixels.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const sourceX = x + shiftX, sourceY = y + shiftY;
+        const destination = (y * width + x) * 4;
+        const inside = sourceX >= 0 && sourceX < width && sourceY >= 0 && sourceY < height;
+        const source = inside ? pixels : frames[0];
+        const sourceOffset = inside ? (sourceY * width + sourceX) * 4 : destination;
+        aligned[destination] = source[sourceOffset];
+        aligned[destination + 1] = source[sourceOffset + 1];
+        aligned[destination + 2] = source[sourceOffset + 2];
+        aligned[destination + 3] = 255;
+      }
+    }
+    frames.push(aligned);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  const fused = ctx.createImageData(width, height);
+  fused.data.set(medianFuse(frames, width, height));
+  ctx.putImageData(fused, 0, 0);
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+  if (!blob) throw new Error('Fusion export failed');
+  return { blob, width, height };
+}
+
+async function createEditorBitmap(it, maxSide) {
+  const fusion = it.adjustments?.fusion;
+  const source = fusion?.blob || it.file;
+  const width = fusion?.width || it.sourceW || it.w;
+  const height = fusion?.height || it.sourceH || it.h;
+  const scale = Math.min(1, maxSide / Math.max(width, height));
+  const options = scale < 1 ? {
+    resizeWidth: Math.max(1, Math.round(width * scale)),
+    resizeHeight: Math.max(1, Math.round(height * scale)),
+    resizeQuality: 'high',
+  } : undefined;
+  return createImageBitmap(source, options);
+}
+
 async function renderEditorPreview() {
   const canvas = document.getElementById('editorCanvas');
   if (!canvas) return;
   const it = S.series[S.si].items[S.fi];
   const token = ++S.previewToken;
   try {
-    const scale = Math.min(1, 1200 / Math.max(it.w, it.h));
-    const bitmap = await createImageBitmap(it.file, {
-      resizeWidth: Math.max(1, Math.round(it.w * scale)),
-      resizeHeight: Math.max(1, Math.round(it.h * scale)),
-      resizeQuality: 'high',
-    });
+    const bitmap = await createEditorBitmap(it, 1200);
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
     const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
     const imageWidth = bitmap.width, imageHeight = bitmap.height;
@@ -368,13 +467,7 @@ async function saveEdited() {
   S.editorError = '';
   render();
   try {
-    const scale = Math.min(1, 4096 / Math.max(it.sourceW || it.w, it.sourceH || it.h));
-    const options = scale < 1 ? {
-      resizeWidth: Math.round((it.sourceW || it.w) * scale),
-      resizeHeight: Math.round((it.sourceH || it.h) * scale),
-      resizeQuality: 'high',
-    } : undefined;
-    const bitmap = options ? await createImageBitmap(it.file, options) : await createImageBitmap(it.file);
+    const bitmap = await createEditorBitmap(it, 4096);
     const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
     const imageWidth = bitmap.width, imageHeight = bitmap.height;
     const canvas = document.createElement('canvas');
@@ -406,6 +499,25 @@ async function saveEdited() {
     if (!e || e.name !== 'AbortError') S.editorError = 'Could not save the edited photo. Try a smaller image.';
   } finally {
     S.editorSaving = false;
+    render();
+  }
+}
+
+async function fuseSeries() {
+  const series = S.series[S.si];
+  const target = series.items[S.fi];
+  S.editorFusing = true;
+  S.editorError = '';
+  render();
+  try {
+    const fusion = await makeBurstFusion(series, target);
+    target.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    target.adjustments.fusion = fusion;
+    S.compare = 'after';
+  } catch (e) {
+    S.editorError = 'Could not fuse these frames. Try a shorter series with a still scene.';
+  } finally {
+    S.editorFusing = false;
     render();
   }
 }
@@ -475,6 +587,11 @@ $app.addEventListener('click', e => {
   }
   else if (a === 'editorBack') { S.screen = 'review'; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
+  else if (a === 'fuseSeries') fuseSeries();
+  else if (a === 'undoFusion') {
+    delete S.series[S.si].items[S.fi].adjustments.fusion;
+    render();
+  }
   else if (a === 'crop') {
     const it = S.series[S.si].items[S.fi];
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };

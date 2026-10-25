@@ -5,6 +5,58 @@ export function sharpestFrameIndex(items) {
     (Number.isFinite(items[best].sharpRel) ? items[best].sharpRel : 0) ? index : best, 0);
 }
 
+export function estimateTranslation(reference, candidate, width, height, maxShift = 4) {
+  if (!reference || !candidate || reference.length !== width * height || candidate.length !== width * height ||
+      !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new RangeError('Grayscale images must match their dimensions');
+  }
+  const limit = Math.max(0, Math.min(Math.floor(maxShift), Math.floor(Math.min(width, height) / 4)));
+  let best = { x: 0, y: 0 };
+  let bestError = Infinity;
+  for (let dy = -limit; dy <= limit; dy++) {
+    for (let dx = -limit; dx <= limit; dx++) {
+      let error = 0, count = 0;
+      const x0 = Math.max(0, -dx), x1 = Math.min(width, width - dx);
+      const y0 = Math.max(0, -dy), y1 = Math.min(height, height - dy);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          error += Math.abs(reference[y * width + x] - candidate[(y + dy) * width + x + dx]);
+          count++;
+        }
+      }
+      const meanError = count ? error / count : Infinity;
+      if (meanError < bestError) {
+        best = { x: dx, y: dy };
+        bestError = meanError;
+      }
+    }
+  }
+  return best;
+}
+
+export function medianFuse(frames, width, height) {
+  const size = width * height * 4;
+  if (!Array.isArray(frames) || frames.length < 2 ||
+      !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
+      frames.some(frame => !frame || frame.length !== size)) {
+    throw new RangeError('At least two matching RGBA frames are required');
+  }
+  const fused = new Uint8ClampedArray(size);
+  const values = new Array(frames.length);
+  for (let i = 0; i < size; i += 4) {
+    for (let channel = 0; channel < 3; channel++) {
+      for (let frame = 0; frame < frames.length; frame++) values[frame] = frames[frame][i + channel];
+      values.sort((a, b) => a - b);
+      const middle = Math.floor(values.length / 2);
+      fused[i + channel] = values.length % 2
+        ? values[middle]
+        : (values[middle - 1] + values[middle]) / 2;
+    }
+    fused[i + 3] = 255;
+  }
+  return fused;
+}
+
 export function bestFaceSources(items, frameIndex) {
   const target = items[frameIndex];
   if (!target) return [];
