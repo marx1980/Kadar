@@ -869,8 +869,8 @@ $app.addEventListener('click', e => {
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
   else if (a === 'editorBack') { S.focusBrush = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
-  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; S.focusBrush = false; S.focusPointer = null; render(); }
-  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; S.focusBrush = false; S.focusPointer = null; render(); }
+  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; S.focusBrush = false; S.focusPointer = null; S.editorError = ''; render(); }
+  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; S.focusBrush = false; S.focusPointer = null; S.editorError = ''; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
