@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, cropRect, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, cropRect, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -136,6 +136,19 @@ test('editor: malformed pixel dimensions are rejected', () => {
 test('editor: pick sharpest selects highest relative sharpness and keeps first on ties', () => {
   assert.equal(sharpestFrameIndex([{ sharpRel: 0.8 }, { sharpRel: 1 }, { sharpRel: 1 }]), 1);
   assert.equal(sharpestFrameIndex([]), -1);
+});
+
+test('editor: best face source matches position and angle, preferring sharp open eyes', () => {
+  const faceAt = (x, sharp, closed = 0, yaw = 0) => ({
+    box: { x, y: 0.2, w: 0.12, h: 0.16 }, sharp, closed, yaw,
+  });
+  const items = [
+    { faces: [faceAt(0.2, 40, 0.9)] },
+    { faces: [faceAt(0.21, 100, 0.05)] },
+    { faces: [faceAt(0.2, 300, 0, 40)] },
+  ];
+  assert.deepEqual(bestFaceSources(items, 0), [{ faceIndex: 0, frameIndex: 1, faceIndex: 0 }]);
+  assert.deepEqual(bestFaceSources(items, 1), []);
 });
 
 test('editor: crop presets return centered rectangles at the requested ratio', () => {
