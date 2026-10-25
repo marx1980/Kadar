@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -144,6 +144,25 @@ test('editor: focus selection samples a normalized foreground mask', () => {
   assert.equal(isForegroundAt(mask, 0.25, 0.75), false);
   assert.equal(isForegroundAt(mask, 1, 1), true);
   assert.throws(() => isForegroundAt({ width: 0, height: 2, data: [] }, 0, 0), RangeError);
+});
+
+test('editor: depth sampling and focus falloff preserve a selected depth plane', () => {
+  const depth = { width: 3, height: 1, data: new Float32Array([0, 0.5, 1]) };
+  assert.equal(depthAt(depth, 0.5, 0), 0.5);
+  assert.equal(depthAt(depth, 1, 0), 1);
+  assert.deepEqual([...depthFocusMask(depth, 0.5).data], [0, 1, 0]);
+  assert.ok(depthFocusMask(depth, 0.5, 0.75).data[0] > 0);
+  assert.throws(() => depthAt({ width: 1, height: 1, data: [] }, 0, 0), RangeError);
+  assert.throws(() => depthFocusMask(depth, 2), RangeError);
+});
+
+test('editor: depth overlay colorization returns opaque heatmap pixels', () => {
+  const pixels = colorizeDepth({ width: 2, height: 1, data: new Float32Array([0, 1]) });
+  assert.equal(pixels.length, 8);
+  assert.equal(pixels[3], 255);
+  assert.equal(pixels[7], 255);
+  assert.notDeepEqual([...pixels.slice(0, 3)], [...pixels.slice(4, 7)]);
+  assert.throws(() => colorizeDepth({ width: 0, height: 1, data: [] }), RangeError);
 });
 
 test('editor: focus brush edits only pixels inside a soft mask stroke', () => {
