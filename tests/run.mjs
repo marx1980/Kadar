@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -144,6 +144,17 @@ test('editor: focus selection samples a normalized foreground mask', () => {
   assert.equal(isForegroundAt(mask, 0.25, 0.75), false);
   assert.equal(isForegroundAt(mask, 1, 1), true);
   assert.throws(() => isForegroundAt({ width: 0, height: 2, data: [] }, 0, 0), RangeError);
+});
+
+test('editor: focus brush paints both mask labels with a soft edge', () => {
+  const mask = { width: 5, height: 5, data: new Float32Array(25) };
+  paintMask(mask, 0.5, 0.5, 0.3, true);
+  assert.equal(mask.data[12], 1);
+  assert.ok(mask.data[7] > 0 && mask.data[7] < 1);
+  assert.equal(mask.data[0], 0);
+  paintMask(mask, 0.5, 0.5, 0.3, false);
+  assert.equal(mask.data[12], 0);
+  assert.throws(() => paintMask(mask, 1.1, 0.5, 0.2, true), RangeError);
 });
 
 test('editor: burst alignment estimates small translations', () => {
