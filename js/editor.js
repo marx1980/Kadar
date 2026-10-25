@@ -5,6 +5,21 @@ export function sharpestFrameIndex(items) {
     (Number.isFinite(items[best].sharpRel) ? items[best].sharpRel : 0) ? index : best, 0);
 }
 
+export function cropRect(width, height, preset = 'original') {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new RangeError('Image dimensions must be positive');
+  }
+  const aspect = { square: 1, portrait: 4 / 5, landscape: 3 / 2 }[preset];
+  if (!aspect) return { x: 0, y: 0, width, height };
+  const sourceAspect = width / height;
+  if (sourceAspect > aspect) {
+    const cropWidth = height * aspect;
+    return { x: (width - cropWidth) / 2, y: 0, width: cropWidth, height };
+  }
+  const cropHeight = width / aspect;
+  return { x: 0, y: (height - cropHeight) / 2, width, height: cropHeight };
+}
+
 export function adjustPixels(data, width, height, adjustments = {}) {
   if (!data || data.length !== width * height * 4) throw new RangeError('Pixel data does not match dimensions');
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));

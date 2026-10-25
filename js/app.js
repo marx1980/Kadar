@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, cropRect, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -133,7 +133,9 @@ function editorScreen() {
   const series = S.series[S.si];
   const it = series.items[S.fi];
   const sharpest = sharpestFrameIndex(series.items);
-  const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+  const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+  const crop = cropRect(it.w, it.h, edits.crop);
+  const aspect = crop.width / crop.height;
   const controls = [
     ['exposure', 'Exposure', -2, 2, 0.1, `${Number(edits.exposure).toFixed(1)} EV`],
     ['contrast', 'Contrast', -50, 50, 1, `${edits.contrast}%`],
@@ -150,11 +152,15 @@ function editorScreen() {
     </div>
   </div>
   <div class="stage editor-stage">
-    <div class="editor-photo" style="aspect-ratio:${it.w}/${it.h};width:min(100%,calc(52dvh * ${it.w / it.h}))">
+  <div class="editor-photo" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
   </div>
+  <div class="crop-set"><span>Crop</span><div class="seg" role="group" aria-label="Crop aspect ratio">
+  ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2']].map(([value, label]) =>
+    `<button data-act="crop" data-v="${value}" aria-pressed="${(edits.crop || 'original') === value}">${label}</button>`).join('')}
+  </div></div>
   ${controls.map(([key, label, min, max, step, value]) => `
     <label class="adjust"><span>${label}<output data-value="${key}">${value}</output></span>
       <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key]}">
@@ -285,10 +291,11 @@ async function renderEditorPreview() {
       resizeQuality: 'high',
     });
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+    canvas.width = Math.max(1, Math.round(crop.width));
+    canvas.height = Math.max(1, Math.round(crop.height));
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bitmap, 0, 0);
+    ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
@@ -311,12 +318,13 @@ async function saveEdited() {
       resizeQuality: 'high',
     } : undefined;
     const bitmap = options ? await createImageBitmap(it.file, options) : await createImageBitmap(it.file);
+    const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
     const canvas = document.createElement('canvas');
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    canvas.width = Math.max(1, Math.round(crop.width));
+    canvas.height = Math.max(1, Math.round(crop.height));
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('Canvas unavailable');
-    ctx.drawImage(bitmap, 0, 0);
+    ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
@@ -370,7 +378,7 @@ $app.addEventListener('input', e => {
   const input = e.target.closest('[data-adjust]');
   if (!input || S.screen !== 'editor') return;
   const it = S.series[S.si].items[S.fi];
-  it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+  it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
   it.adjustments[input.dataset.adjust] = Number(input.value);
   const output = $app.querySelector(`[data-value="${input.dataset.adjust}"]`);
   if (output) {
@@ -403,11 +411,17 @@ $app.addEventListener('click', e => {
   else if (a === 'frame') { S.fi = Number(t.dataset.f); render(); }
   else if (a === 'edit') {
     const it = S.series[S.si].items[S.fi];
-    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
   else if (a === 'editorBack') { S.screen = 'review'; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
+  else if (a === 'crop') {
+    const it = S.series[S.si].items[S.fi];
+    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    it.adjustments.crop = t.dataset.v;
+    render();
+  }
   else if (a === 'pickSharpest') {
     const sharpest = sharpestFrameIndex(S.series[S.si].items);
     if (sharpest >= 0) {
