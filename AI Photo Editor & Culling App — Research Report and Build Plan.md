@@ -1,16 +1,16 @@
-# AI Photo Editor & Culling App — Research Report and Build Plan
+# Kadar — Photo Editor and Culling Build Plan
 
 Oct 24, 2026 · @Marko
 
 ## Executive summary
 
-Build it as a phone web app with the same setup as Kodeks (GitHub Pages, installed to the Home Screen). Culling, background blur and burst fusion run on the phone for free; generative unblur runs in the cloud only when you ask, at about $0.03 to $0.13 per image.
+Build Kadar as a phone-first photo editor, with culling as one of its workflows rather than the app's front door. Keep the existing static web app setup (GitHub Pages, installed to the Home Screen). Photo editing, culling, focus effects and burst recovery run on the phone; generative repair runs in the cloud only when requested.
 
-- **Series culling is the most buildable and most useful feature.** Pro tools (Aftershoot, Narrative Select, Imagen) already flag blur, closed eyes and near-duplicates, but they are desktop apps for photographers. Every criterion you listed can be checked on the phone with free models. Realistic limit: "awkward expression" is the weakest signal, so it should flag, never decide.
+- **The product is a photo editor.** Start with a direct edit workflow for one or more selected photos; culling is a separate, optional feature for people who want help choosing from a series. Pro culling tools (Aftershoot, Narrative Select, Imagen) already flag blur, closed eyes and near-duplicates, but they are desktop apps for photographers. Realistic limit: "awkward expression" is the weakest signal, so it should flag, never decide.
 - **"Sharpen a blurry photo" means two different things.** Real recovery: several frames of a still scene can be fused into a sharper image using detail that was actually captured (works for hand shake, not a moving subject). Invented recovery: generative models produce convincing detail that is a plausible guess. Feeding sharper frames of the same person from the series as references keeps faces closer to the real person.
 - **Changing focus is half solved.** Adding background blur from an AI depth map is mature and runs on the phone, as in Lightroom's Lens Blur. Bringing a blurred area into focus is only possible generatively; research exists but there is no ready, affordable API.
 - **Two platform limits shape the design.** A web app cannot delete photos from the iPhone Photos library, and iOS can strip EXIF (including capture time) when Safari hands a photo to a page. So the app proposes and you delete in Photos, and grouping cannot rely on timestamps alone.
-- **Plan:** four phases, culling first. Phase 1 is a working culling tool you can use on real series; generative features come after it.
+- **Plan:** first rearchitect the interface and application state around editing photos directly, while keeping culling available as a distinct workflow. Then harden the core editor, integrate culling, build on-device recovery and focus tools, and only then add cloud repair.
 
 ## Market scan
 
@@ -120,36 +120,69 @@ Only AI repair leaves the phone; the proxy keeps the API key out of the public p
 - **Performance:** analyse at about 1024 px to stay inside phone memory; use full resolution only for the final export.
 - **Offline:** everything except AI repair works offline once models are cached, as with Kodeks.
 
-## Feature spec and screens
+## Product structure and screens
 
-Five screens, labels and values only, no explanatory text on screen.
+Two distinct workflows share the photo editor. Selecting **Edit photos** opens selected images directly in the editor; it does not run culling models. Selecting **Cull a series** runs the existing analysis and opens the series/review workflow. The editor exposes series-only recovery tools when editing from a culling session.
 
 | Screen | What's on it |
 | --- | --- |
-| Import | Add photos (multi-select picker), recent sessions |
+| Home | Edit photos (primary workflow); Cull a series (optional workflow); settings |
+| Photo editor | Selected photo, before/after, crop, exposure, contrast, colour, sharpen, focus blur, save copy; navigate selected photos |
 | Series | One card per detected series: thumbnail, frame count, Keep / Delete counts; strictness slider |
-| Review | Ranked filmstrip, large current frame, reason labels (Blur, Eyes, Away, Cut, Expression), Keep / Delete toggle, face close-up strip, Save keepers |
-| Editor | Sharpen: Pick, Fuse, Face swap, AI repair (with strength slider). Focus: tap point, Blur, Depth overlay, Brush. Adjust: crop, exposure, contrast, colour, unsharp mask. Before / After, Save |
-| Settings | Keep per series, sensitivity per criterion, cloud API key, cloud on / off |
+| Review | Ranked filmstrip, large current frame, reason labels (Blur, Eyes, Away, Cut, Expression), Keep / Delete toggle, face close-up strip, Save keepers, Edit |
+| Settings | Culling keep count, grouping strictness and sensitivity per criterion; cloud settings when available |
 
 | Feature | Phase | Runs on |
 | --- | --- | --- |
-| Series grouping, five culling checks, ranking, proposals | 1 | Phone |
-| Review screen, save keepers via share sheet | 1 | Phone |
-| Basic adjustments, unsharp mask, before / after | 2 | Phone |
-| Pick sharpest, burst fusion, face swap from series | 2 | Phone |
-| Depth map, tap-to-focus blur, bokeh, depth overlay | 3 | Phone |
+| Editor-first navigation and separate editing/culling application state | 0 | Phone |
+| Direct photo import, basic adjustments, crop, before/after, save copies | 1 | Phone |
+| Optional series grouping, culling checks, ranking, proposals and review | 2 | Phone |
+| Pick sharpest, burst fusion and face recovery from sibling frames | 3 | Phone |
+| Depth map, tap-to-focus blur, bokeh and depth overlay | 3 | Phone |
 | AI repair with series references, AI background focus | 4 | Cloud |
 
 All photos stay on the phone unless you press an AI button; then only the selected photo and its chosen reference frames are sent.
 
-## Build plan
+## Updated build plan
 
-Build in four phases and use each one on real photos before starting the next. Phase 1 is the largest; phases 2 and 3 are medium; phase 4 is small in code but needs the most testing.
+Build the photo editor as the main product and retain culling as one feature. Existing code already contains culling, editing, series recovery and a person-mask focus effect; the next work is to separate those workflows cleanly, then complete and validate the phases in this order. Each phase ends with testing on real photos, not a feature checklist.
 
-&#91;embedded content: build plan · 4 phases, each with a done-when gate\]
+### Phase 0 — Re-architect the interface and app state
 
-Each phase ends with a test on your own series, not a feature checklist.
+- Make the home screen clearly offer direct editing and series culling, with editing as the primary path.
+- Make editing selected photos possible without initializing the culling models or requiring a culling session.
+- Separate the standalone editor's photo collection and navigation from the culling session's series, review decisions and analysis metadata.
+- Reuse editor rendering and image operations across both paths; show sharpest-frame, fusion and face-recovery actions only when sibling frames are available.
+- Keep originals unchanged and make export behavior consistent.
+- **Done when:** a person can select a photo, understand that they are in the editor, make an edit and save a copy without encountering culling screens or waiting for culling models; the existing culling path still works.
+
+### Phase 1 — Complete the everyday photo editor
+
+- Polish the direct import and navigation experience for single and multiple photos.
+- Validate crop, exposure, contrast, colour, sharpening, before/after, focus blur and save-copy on real photos and supported mobile browsers.
+- Improve editing state and error handling so switching photos does not lose adjustments.
+- **Done when:** the editor is useful independently of culling, handles common phone photos reliably and never alters the original.
+
+### Phase 2 — Make culling a well-integrated feature
+
+- Keep culling as an explicit workflow from the home screen, independent from the normal edit-first path.
+- Preserve series grouping, five culling checks, ranking, review overrides, keeper export and the delete list.
+- Make it straightforward to open an individual keeper in the shared editor and return to review.
+- **Done when:** real series can be culled, reviewed, edited and exported without breaking either workflow; one-off photos remain safe.
+
+### Phase 3 — Improve on-device recovery and focus tools
+
+- Keep sharpest-frame choice, burst fusion and best-face recovery available only when a series supplies reference frames.
+- Improve mask-based focus blur and evaluate Depth Anything V2 Small for actual depth-aware focus, bokeh, overlay and mask correction.
+- Clearly communicate limitations and let users inspect every result.
+- **Done when:** real-photo tests establish where each effect works, where it fails and what safeguards or fallbacks are needed.
+
+### Phase 4 — Add optional cloud AI repair
+
+- Select a provider and spending cap; add a proxy that keeps provider credentials out of the static client.
+- Send only the photo and references selected by the user, after explicit action and confirmation.
+- Label generated results, include strength and before/after controls, and preserve the original.
+- **Done when:** privacy, cost, error handling, identity drift and output quality have been tested before general use.
 
 ### Risks
 
