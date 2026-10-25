@@ -849,6 +849,16 @@ function step(df) {
   if (n >= 0 && n < s.items.length) { S.fi = n; render(); }
 }
 
+function stepEditor(df) {
+  const n = S.editIndex + df;
+  if (n < 0 || n >= S.editItems.length) return;
+  S.editIndex = n;
+  S.focusBrush = false;
+  S.focusPointer = null;
+  S.editorError = '';
+  render();
+}
+
 function bindSwipe() {
   const el = document.getElementById('photo');
   if (!el) return;
@@ -976,8 +986,8 @@ $app.addEventListener('click', e => {
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
   else if (a === 'editorBack') { S.focusBrush = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
-  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; S.focusBrush = false; S.focusPointer = null; S.editorError = ''; render(); }
-  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; S.focusBrush = false; S.focusPointer = null; S.editorError = ''; render(); }
+  else if (a === 'editorPrev' && S.editorMode === 'photos') stepEditor(-1);
+  else if (a === 'editorNext' && S.editorMode === 'photos') stepEditor(1);
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
@@ -1058,9 +1068,15 @@ $app.addEventListener('click', e => {
 });
 
 document.addEventListener('keydown', e => {
-  if (S.screen !== 'review' || S.sheet) return;
-  if (e.key === 'ArrowRight') step(1);
-  if (e.key === 'ArrowLeft') step(-1);
+  if (S.sheet || e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  if (S.screen === 'review') {
+    if (e.key === 'ArrowRight') step(1);
+    if (e.key === 'ArrowLeft') step(-1);
+    return;
+  }
+  if (S.screen !== 'editor' || S.editorMode !== 'photos') return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepEditor(1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); stepEditor(-1); }
 });
 
 render();
