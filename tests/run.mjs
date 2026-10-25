@@ -148,11 +148,11 @@ test('editor: focus selection samples a normalized foreground mask', () => {
 
 test('editor: focus brush edits only pixels inside a soft mask stroke', () => {
   const mask = { width: 5, height: 5, data: new Float32Array(25).fill(0) };
-  paintMask(mask, 0.5, 0.5, 1.5, 1);
+  paintMask(mask, 0.5, 0.5, 1.2, 1);
   assert.equal(mask.data[2 * 5 + 2], 1);
   assert.ok(mask.data[2 * 5 + 1] > 0 && mask.data[2 * 5 + 1] < 1);
   assert.equal(mask.data[0], 0);
-  paintMask(mask, 0.5, 0.5, 1.5, 0);
+  paintMask(mask, 0.5, 0.5, 1.2, 0);
   assert.equal(mask.data[2 * 5 + 2], 0);
   assert.throws(() => paintMask(mask, 0, 0, 0, 1), RangeError);
   assert.throws(() => paintMask(mask, 0, 0, 1, 2), RangeError);

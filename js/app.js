@@ -737,6 +737,8 @@ async function fuseSeries() {
   const series = S.series[S.si];
   const target = editorItem();
   S.editorFusing = true;
+  S.focusBrush = false;
+  S.focusPointer = null;
   S.editorError = '';
   render();
   try {
@@ -873,6 +875,8 @@ $app.addEventListener('click', e => {
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
     const it = editorItem();
+    S.focusBrush = false;
+    S.focusPointer = null;
     delete it.adjustments.fusion;
     delete it.adjustments.focusMask;
     it.adjustments.focusPerson = null;
