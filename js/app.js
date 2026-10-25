@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels } from './editor.js';
+import { adjustPixels, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -130,7 +130,9 @@ function reviewScreen() {
 }
 
 function editorScreen() {
-  const it = S.series[S.si].items[S.fi];
+  const series = S.series[S.si];
+  const it = series.items[S.fi];
+  const sharpest = sharpestFrameIndex(series.items);
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
   const controls = [
     ['exposure', 'Exposure', -2, 2, 0.1, `${Number(edits.exposure).toFixed(1)} EV`],
@@ -159,6 +161,7 @@ function editorScreen() {
     </label>`).join('')}
   ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
   <div class="editor-actions">
+    <button class="btn" data-act="pickSharpest" ${sharpest === S.fi ? 'disabled' : ''}>Pick sharpest</button>
     <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
   </div>`;
 }
@@ -405,6 +408,17 @@ $app.addEventListener('click', e => {
   }
   else if (a === 'editorBack') { S.screen = 'review'; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
+  else if (a === 'pickSharpest') {
+    const sharpest = sharpestFrameIndex(S.series[S.si].items);
+    if (sharpest >= 0) {
+      S.fi = sharpest;
+      S.compare = 'after';
+      S.editorError = '';
+      const it = S.series[S.si].items[S.fi];
+      it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+      render();
+    }
+  }
   else if (a === 'saveEdited') saveEdited();
   else if (a === 'decide') {
     const it = S.series[S.si].items[S.fi];
