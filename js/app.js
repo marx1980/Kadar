@@ -1,4 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
+import { adjustPixels } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -19,6 +20,10 @@ const S = {
   busy: false, done: 0, total: 0, error: '',
   settings: loadSettings(),
   sheet: false,
+  compare: 'after',
+  editorSaving: false,
+  editorError: '',
+  previewToken: 0,
 };
 
 function loadSettings() {
@@ -115,12 +120,47 @@ function reviewScreen() {
       <button data-act="decide" data-v="keep" aria-pressed="${d === 'keep'}">Keep</button>
       <button data-act="decide" data-v="delete" aria-pressed="${d === 'delete'}">Delete</button>
     </div>
+    <button class="btn" data-act="edit">Edit</button>
   </div>
   ${faces.length ? `<div class="faces">${faces.map(f => {
     const iss = faceIssues(f, st);
     return `<span class="face ${iss.length ? 'bad' : ''}"><img src="${f.thumb}" alt="">${iss[0] || ''}</span>`;
   }).join('')}</div>` : ''}
   <div class="film" id="film">${s.items.map((x, k) => `<button data-act="frame" data-f="${k}" aria-label="Frame ${x.frame}">${frame(x, k === S.fi ? 'cur' : '')}</button>`).join('')}</div>`;
+}
+
+function editorScreen() {
+  const it = S.series[S.si].items[S.fi];
+  const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+  const controls = [
+    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(edits.exposure).toFixed(1)} EV`],
+    ['contrast', 'Contrast', -50, 50, 1, `${edits.contrast}%`],
+    ['saturation', 'Colour', 0, 200, 1, `${edits.saturation}%`],
+    ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(edits.sharpness).toFixed(1)}`],
+  ];
+  return `
+  <div class="top">
+    <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
+    <h2>Edit frame <span class="num">${it.frame}</span></h2>
+    <div class="seg" role="group" aria-label="Before and after">
+      <button data-act="compare" data-v="before" aria-pressed="${S.compare === 'before'}">Before</button>
+      <button data-act="compare" data-v="after" aria-pressed="${S.compare === 'after'}">After</button>
+    </div>
+  </div>
+  <div class="stage editor-stage">
+    <div class="editor-photo" style="aspect-ratio:${it.w}/${it.h};width:min(100%,calc(52dvh * ${it.w / it.h}))">
+      <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
+      <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
+    </div>
+  </div>
+  ${controls.map(([key, label, min, max, step, value]) => `
+    <label class="adjust"><span>${label}<output data-value="${key}">${value}</output></span>
+      <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key]}">
+    </label>`).join('')}
+  ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
+  <div class="editor-actions">
+    <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
+  </div>`;
 }
 
 function deletesScreen() {
@@ -154,6 +194,7 @@ function sheet() {
 function render() {
   const body = S.screen === 'series' ? seriesScreen()
     : S.screen === 'review' ? reviewScreen()
+    : S.screen === 'editor' ? editorScreen()
     : S.screen === 'deletes' ? deletesScreen()
     : home();
   $app.innerHTML = body + (S.sheet ? sheet() : '');
@@ -162,6 +203,7 @@ function render() {
     cur && cur.scrollIntoView({ block: 'nearest', inline: 'center' });
     bindSwipe();
   }
+  if (S.screen === 'editor') renderEditorPreview();
 }
 
 // ---------- actions ----------
@@ -227,6 +269,77 @@ async function saveKeepers() {
   }
 }
 
+async function renderEditorPreview() {
+  const canvas = document.getElementById('editorCanvas');
+  if (!canvas) return;
+  const it = S.series[S.si].items[S.fi];
+  const token = ++S.previewToken;
+  try {
+    const scale = Math.min(1, 1200 / Math.max(it.w, it.h));
+    const bitmap = await createImageBitmap(it.file, {
+      resizeWidth: Math.max(1, Math.round(it.w * scale)),
+      resizeHeight: Math.max(1, Math.round(it.h * scale)),
+      resizeQuality: 'high',
+    });
+    if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
+    ctx.putImageData(pixels, 0, 0);
+  } catch (e) {
+    if (token === S.previewToken) S.editorError = 'Could not preview these adjustments.';
+  }
+}
+
+async function saveEdited() {
+  const it = S.series[S.si].items[S.fi];
+  S.editorSaving = true;
+  S.editorError = '';
+  render();
+  try {
+    const scale = Math.min(1, 4096 / Math.max(it.sourceW || it.w, it.sourceH || it.h));
+    const options = scale < 1 ? {
+      resizeWidth: Math.round((it.sourceW || it.w) * scale),
+      resizeHeight: Math.round((it.sourceH || it.h) * scale),
+      resizeQuality: 'high',
+    } : undefined;
+    const bitmap = options ? await createImageBitmap(it.file, options) : await createImageBitmap(it.file);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Canvas unavailable');
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
+    ctx.putImageData(pixels, 0, 0);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob) throw new Error('Image export failed');
+    const name = `${it.name.replace(/\.[^.]+$/, '') || 'photo'}-edited.jpg`;
+    const file = new File([blob], name, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+    } else {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    S.screen = 'review';
+  } catch (e) {
+    if (!e || e.name !== 'AbortError') S.editorError = 'Could not save the edited photo. Try a smaller image.';
+  } finally {
+    S.editorSaving = false;
+    render();
+  }
+}
+
 function step(df) {
   const s = S.series[S.si];
   const n = S.fi + df;
@@ -250,6 +363,22 @@ $app.addEventListener('change', e => {
   if (e.target.id === 'pick' && e.target.files.length) analyze([...e.target.files]);
 });
 
+$app.addEventListener('input', e => {
+  const input = e.target.closest('[data-adjust]');
+  if (!input || S.screen !== 'editor') return;
+  const it = S.series[S.si].items[S.fi];
+  it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+  it.adjustments[input.dataset.adjust] = Number(input.value);
+  const output = $app.querySelector(`[data-value="${input.dataset.adjust}"]`);
+  if (output) {
+    const { exposure, contrast, saturation, sharpness } = it.adjustments;
+    output.textContent = input.dataset.adjust === 'exposure' ? `${exposure.toFixed(1)} EV`
+      : input.dataset.adjust === 'sharpness' ? sharpness.toFixed(1)
+      : `${input.value}%`;
+  }
+  requestAnimationFrame(renderEditorPreview);
+});
+
 $app.addEventListener('click', e => {
   const t = e.target.closest('[data-act]');
   if (!t) return;
@@ -269,6 +398,14 @@ $app.addEventListener('click', e => {
   else if (a === 'ps' && S.si > 0) { S.si--; S.fi = 0; render(); }
   else if (a === 'ns' && S.si < S.series.length - 1) { S.si++; S.fi = 0; render(); }
   else if (a === 'frame') { S.fi = Number(t.dataset.f); render(); }
+  else if (a === 'edit') {
+    const it = S.series[S.si].items[S.fi];
+    it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0 };
+    S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
+  }
+  else if (a === 'editorBack') { S.screen = 'review'; render(); }
+  else if (a === 'compare') { S.compare = t.dataset.v; render(); }
+  else if (a === 'saveEdited') saveEdited();
   else if (a === 'decide') {
     const it = S.series[S.si].items[S.fi];
     it.override = t.dataset.v === it.proposal ? null : t.dataset.v;

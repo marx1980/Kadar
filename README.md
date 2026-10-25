@@ -4,6 +4,8 @@ Phone web app that groups photos into series, checks each frame and proposes whi
 
 Phase 1 of the plan: culling. Runs entirely on the phone; photos are never uploaded.
 
+The first Phase 2 editor tools are available from a reviewed frame: before/after preview, exposure, contrast, colour saturation, sharpening, and save-as-copy. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
+
 ## How it works
 
 - **Grouping:** image embeddings (MediaPipe MobileNet-V3) compared frame to frame, plus EXIF capture time when Safari keeps it. Grouping setting: Loose / Normal / Strict.
