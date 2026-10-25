@@ -16,7 +16,7 @@ async function getEstimator() {
           return await createEstimator('webgpu', 'q4f16');
         } catch {}
       }
-      return createEstimator('wasm', 'uint8');
+      return createEstimator('wasm', 'q8');
     })().catch(error => {
       estimatorPromise = null;
       throw error;
