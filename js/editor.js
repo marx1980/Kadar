@@ -5,6 +5,17 @@ export function sharpestFrameIndex(items) {
     (Number.isFinite(items[best].sharpRel) ? items[best].sharpRel : 0) ? index : best, 0);
 }
 
+export function isForegroundAt(mask, x, y) {
+  if (!mask || !Number.isInteger(mask.width) || !Number.isInteger(mask.height) ||
+      mask.width <= 0 || mask.height <= 0 || !mask.data || mask.data.length !== mask.width * mask.height ||
+      !Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new RangeError('A valid foreground mask and normalized point are required');
+  }
+  const px = Math.max(0, Math.min(mask.width - 1, Math.floor(x * mask.width)));
+  const py = Math.max(0, Math.min(mask.height - 1, Math.floor(y * mask.height)));
+  return mask.data[py * mask.width + px] >= 0.5;
+}
+
 export function estimateTranslation(reference, candidate, width, height, maxShift = 4) {
   if (!reference || !candidate || reference.length !== width * height || candidate.length !== width * height ||
       !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
