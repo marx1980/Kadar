@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, medianFuse, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -136,6 +136,14 @@ test('editor: malformed pixel dimensions are rejected', () => {
 test('editor: pick sharpest selects highest relative sharpness and keeps first on ties', () => {
   assert.equal(sharpestFrameIndex([{ sharpRel: 0.8 }, { sharpRel: 1 }, { sharpRel: 1 }]), 1);
   assert.equal(sharpestFrameIndex([]), -1);
+});
+
+test('editor: focus selection samples a normalized foreground mask', () => {
+  const mask = { width: 2, height: 2, data: new Float32Array([0, 0.8, 0.2, 1]) };
+  assert.equal(isForegroundAt(mask, 0.75, 0.25), true);
+  assert.equal(isForegroundAt(mask, 0.25, 0.75), false);
+  assert.equal(isForegroundAt(mask, 1, 1), true);
+  assert.throws(() => isForegroundAt({ width: 0, height: 2, data: [] }, 0, 0), RangeError);
 });
 
 test('editor: burst alignment estimates small translations', () => {

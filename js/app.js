@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, medianFuse, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -23,6 +23,7 @@ const S = {
   compare: 'after',
   editorSaving: false,
   editorFusing: false,
+  editorFocusing: false,
   editorError: '',
   previewToken: 0,
 };
@@ -146,6 +147,8 @@ function editorScreen() {
     ['saturation', 'Colour', 0, 200, 1, `${edits.saturation}%`],
     ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(edits.sharpness).toFixed(1)}`],
   ];
+  const focusPerson = edits.focusPerson;
+  const focusMask = edits.focusMask;
   return `
   <div class="top">
     <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
@@ -159,6 +162,17 @@ function editorScreen() {
     <div class="editor-photo" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
+    </div>
+  </div>
+  <div class="focus-tools">
+    <span>Tap photo to focus · ${focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
+    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
+      <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusPerson == null ? 'disabled' : ''}>
+    </label>
+    <div class="focus-actions">
+      <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
+      <button class="btn" data-act="clearFocus" ${focusPerson == null ? 'disabled' : ''}>Reset focus</button>
+      ${S.editorFocusing ? '<span role="status">Finding focus…</span>' : ''}
     </div>
   </div>
   <div class="crop-set"><span>Crop</span><div class="seg" role="group" aria-label="Crop aspect ratio">
@@ -453,11 +467,109 @@ async function renderEditorPreview() {
     bitmap.close();
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     if (token !== S.previewToken || S.screen !== 'editor') return;
+    applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
   } catch (e) {
     if (token === S.previewToken) S.editorError = 'Could not preview these adjustments.';
+  }
+}
+
+function makeMaskCanvas(mask) {
+  const canvas = document.createElement('canvas');
+  canvas.width = mask.width;
+  canvas.height = mask.height;
+  const ctx = canvas.getContext('2d');
+  const pixels = ctx.createImageData(mask.width, mask.height);
+  for (let i = 0; i < mask.data.length; i++) {
+    const alpha = Math.round(Math.max(0, Math.min(1, mask.data[i])) * 255);
+    const p = i * 4;
+    pixels.data[p] = pixels.data[p + 1] = pixels.data[p + 2] = 255;
+    pixels.data[p + 3] = alpha;
+  }
+  ctx.putImageData(pixels, 0, 0);
+  return canvas;
+}
+
+function applyFocusEffect(ctx, edits, crop, imageWidth, imageHeight) {
+  const mask = edits?.focusMask;
+  const focusPerson = edits?.focusPerson;
+  if (!mask || focusPerson == null || (!edits.focusOverlay && Number(edits.focusBlur) <= 0)) return;
+
+  const width = ctx.canvas.width, height = ctx.canvas.height;
+  const blur = Math.max(0, Math.min(24, Number(edits.focusBlur) || 0)) *
+    Math.max(imageWidth, imageHeight) / 1200;
+  const margin = Math.ceil(blur * 2);
+  const blurred = document.createElement('canvas');
+  blurred.width = width + margin * 2;
+  blurred.height = height + margin * 2;
+  const blurCtx = blurred.getContext('2d');
+  blurCtx.filter = `blur(${blur}px)`;
+  blurCtx.drawImage(ctx.canvas, margin, margin);
+  blurCtx.filter = 'none';
+
+  const maskCanvas = makeMaskCanvas(mask);
+  const sx = crop.x * mask.width / imageWidth;
+  const sy = crop.y * mask.height / imageHeight;
+  const sw = crop.width * mask.width / imageWidth;
+  const sh = crop.height * mask.height / imageHeight;
+  ctx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
+  ctx.drawImage(maskCanvas, sx, sy, sw, sh, 0, 0, width, height);
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.drawImage(blurred, margin, margin, width, height, 0, 0, width, height);
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (edits.focusOverlay) {
+    const overlay = document.createElement('canvas');
+    overlay.width = mask.width;
+    overlay.height = mask.height;
+    const overlayCtx = overlay.getContext('2d');
+    overlayCtx.fillStyle = '#F2C230';
+    overlayCtx.fillRect(0, 0, overlay.width, overlay.height);
+    overlayCtx.globalCompositeOperation = focusPerson ? 'destination-in' : 'destination-out';
+    overlayCtx.drawImage(maskCanvas, 0, 0);
+    ctx.globalAlpha = 0.3;
+    ctx.drawImage(overlay, sx, sy, sw, sh, 0, 0, width, height);
+    ctx.globalAlpha = 1;
+  }
+}
+
+async function getFocusMask(it) {
+  if (it.adjustments?.focusMask) return it.adjustments.focusMask;
+  const { segmentForeground } = await import('./focus.js');
+  const bitmap = await createEditorBitmap(it, 1200);
+  try {
+    const mask = await segmentForeground(bitmap);
+    it.adjustments.focusMask = mask;
+    return mask;
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function selectFocus(event, photo) {
+  if (S.editorFocusing) return;
+  const it = S.series[S.si].items[S.fi];
+  const rect = photo.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  S.editorFocusing = true;
+  S.editorError = '';
+  render();
+  try {
+    const mask = await getFocusMask(it);
+    const crop = cropRect(it.w, it.h, it.adjustments?.crop);
+    const sourceX = (crop.x + x * crop.width) / it.w;
+    const sourceY = (crop.y + y * crop.height) / it.h;
+    const focusPerson = isForegroundAt(mask, sourceX, sourceY);
+    it.adjustments.focusPerson = focusPerson;
+    it.adjustments.focusBlur ??= 12;
+  } catch (e) {
+    S.editorError = 'Could not find the subject mask. Connect to the internet once, then try again.';
+  } finally {
+    S.editorFocusing = false;
+    render();
   }
 }
 
@@ -478,6 +590,8 @@ async function saveEdited() {
     ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
+    if (it.adjustments?.focusPerson != null && !it.adjustments.focusMask) await getFocusMask(it);
+    applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
@@ -513,6 +627,9 @@ async function fuseSeries() {
     const fusion = await makeBurstFusion(series, target);
     target.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     target.adjustments.fusion = fusion;
+    delete target.adjustments.focusMask;
+    target.adjustments.focusPerson = null;
+    target.adjustments.focusOverlay = false;
     S.compare = 'after';
   } catch (e) {
     S.editorError = 'Could not fuse these frames. Try a shorter series with a still scene.';
@@ -546,6 +663,15 @@ $app.addEventListener('change', e => {
 });
 
 $app.addEventListener('input', e => {
+  const focusBlur = e.target.closest('[data-focus-blur]');
+  if (focusBlur && S.screen === 'editor') {
+    const it = S.series[S.si].items[S.fi];
+    it.adjustments.focusBlur = Number(focusBlur.value);
+    const output = $app.querySelector('[data-value="focusBlur"]');
+    if (output) output.textContent = `${focusBlur.value} px`;
+    requestAnimationFrame(renderEditorPreview);
+    return;
+  }
   const input = e.target.closest('[data-adjust]');
   if (!input || S.screen !== 'editor') return;
   const it = S.series[S.si].items[S.fi];
@@ -562,6 +688,11 @@ $app.addEventListener('input', e => {
 });
 
 $app.addEventListener('click', e => {
+  const photo = e.target.closest('.editor-photo');
+  if (photo && S.screen === 'editor') {
+    selectFocus(e, photo);
+    return;
+  }
   const t = e.target.closest('[data-act]');
   if (!t) return;
   if (t.dataset.act === 'close' && e.target.closest('[data-stop]') && !e.target.closest('button[data-act=close]')) return;
@@ -590,6 +721,20 @@ $app.addEventListener('click', e => {
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
     delete S.series[S.si].items[S.fi].adjustments.fusion;
+    delete S.series[S.si].items[S.fi].adjustments.focusMask;
+    S.series[S.si].items[S.fi].adjustments.focusPerson = null;
+    S.series[S.si].items[S.fi].adjustments.focusOverlay = false;
+    render();
+  }
+  else if (a === 'focusOverlay') {
+    const it = S.series[S.si].items[S.fi];
+    it.adjustments.focusOverlay = !it.adjustments.focusOverlay;
+    render();
+  }
+  else if (a === 'clearFocus') {
+    const it = S.series[S.si].items[S.fi];
+    it.adjustments.focusPerson = null;
+    it.adjustments.focusOverlay = false;
     render();
   }
   else if (a === 'crop') {
