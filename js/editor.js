@@ -1,3 +1,10 @@
+export function sharpestFrameIndex(items) {
+  if (!items.length) return -1;
+  return items.reduce((best, item, index) =>
+    (Number.isFinite(item.sharpRel) ? item.sharpRel : 0) >
+    (Number.isFinite(items[best].sharpRel) ? items[best].sharpRel : 0) ? index : best, 0);
+}
+
 export function adjustPixels(data, width, height, adjustments = {}) {
   if (!data || data.length !== width * height * 4) throw new RangeError('Pixel data does not match dimensions');
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));

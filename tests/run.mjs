@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels } from '../js/editor.js';
+import { adjustPixels, sharpestFrameIndex } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -132,6 +132,10 @@ test('editor: unsharp mask increases local edge contrast and preserves alpha', (
 });
 test('editor: malformed pixel dimensions are rejected', () => {
   assert.throws(() => adjustPixels(new Uint8ClampedArray(3), 1, 1), RangeError);
+});
+test('editor: pick sharpest selects highest relative sharpness and keeps first on ties', () => {
+  assert.equal(sharpestFrameIndex([{ sharpRel: 0.8 }, { sharpRel: 1 }, { sharpRel: 1 }]), 1);
+  assert.equal(sharpestFrameIndex([]), -1);
 });
 
 // ---------- grouping and ranking ----------
