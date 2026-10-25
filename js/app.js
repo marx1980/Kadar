@@ -148,7 +148,7 @@ function editorScreen() {
     </div>
   </div>
   <div class="stage editor-stage">
-    <div class="editor-photo" style="aspect-ratio:${it.w}/${it.h}">
+    <div class="editor-photo" style="aspect-ratio:${it.w}/${it.h};width:min(100%,calc(52dvh * ${it.w / it.h}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
@@ -275,7 +275,12 @@ async function renderEditorPreview() {
   const it = S.series[S.si].items[S.fi];
   const token = ++S.previewToken;
   try {
-    const bitmap = await createImageBitmap(it.file, { resizeWidth: Math.min(1200, it.w), resizeHeight: Math.min(1200, it.h), resizeQuality: 'high' });
+    const scale = Math.min(1, 1200 / Math.max(it.w, it.h));
+    const bitmap = await createImageBitmap(it.file, {
+      resizeWidth: Math.max(1, Math.round(it.w * scale)),
+      resizeHeight: Math.max(1, Math.round(it.h * scale)),
+      resizeQuality: 'high',
+    });
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
@@ -296,14 +301,19 @@ async function saveEdited() {
   S.editorError = '';
   render();
   try {
-    const bitmap = await createImageBitmap(it.file);
-    const scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
+    const scale = Math.min(1, 4096 / Math.max(it.sourceW || it.w, it.sourceH || it.h));
+    const options = scale < 1 ? {
+      resizeWidth: Math.round((it.sourceW || it.w) * scale),
+      resizeHeight: Math.round((it.sourceH || it.h) * scale),
+      resizeQuality: 'high',
+    } : undefined;
+    const bitmap = options ? await createImageBitmap(it.file, options) : await createImageBitmap(it.file);
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('Canvas unavailable');
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0);
     bitmap.close();
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);

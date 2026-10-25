@@ -115,7 +115,12 @@ test('edges and cosine', () => {
 test('editor: exposure, contrast and saturation adjust RGB values', () => {
   const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 50, 0, 255]);
   adjustPixels(pixels, 2, 1, { exposure: 1, saturation: 0 });
-  assert.deepEqual([...pixels], [200, 200, 200, 255, 150, 150, 150, 255]);
+  assert.deepEqual([...pixels], [200, 200, 200, 255, 118, 118, 118, 255]);
+});
+test('editor: default adjustments preserve source pixels', () => {
+  const pixels = new Uint8ClampedArray([25, 100, 220, 255]);
+  adjustPixels(pixels, 1, 1);
+  assert.deepEqual([...pixels], [25, 100, 220, 255]);
 });
 test('editor: unsharp mask increases local edge contrast and preserves alpha', () => {
   const pixels = new Uint8ClampedArray(5 * 5 * 4);

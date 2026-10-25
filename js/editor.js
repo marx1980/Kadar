@@ -3,7 +3,7 @@ export function adjustPixels(data, width, height, adjustments = {}) {
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));
   const contrast = Math.max(-100, Math.min(100, Number(adjustments.contrast) || 0));
   const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-  const saturation = Math.max(0, Math.min(200, Number(adjustments.saturation) || 0)) / 100;
+  const saturation = Math.max(0, Math.min(200, Number(adjustments.saturation ?? 100) || 0)) / 100;
   const sharpness = Math.max(0, Math.min(2, Number(adjustments.sharpness) || 0));
 
   for (let i = 0; i < data.length; i += 4) {

@@ -96,7 +96,8 @@ export async function analyzeFile(file, order) {
   const { face, objects, embed } = await initEngine();
   const time = await readExifTime(file);
   const bmp = await createImageBitmap(file);
-  const s = Math.min(1, VIEW_MAX / Math.max(bmp.width, bmp.height));
+  const sourceW = bmp.width, sourceH = bmp.height;
+  const s = Math.min(1, VIEW_MAX / Math.max(sourceW, sourceH));
   const view = canvas(bmp.width * s, bmp.height * s);
   view.getContext('2d').drawImage(bmp, 0, 0, view.width, view.height);
   const W = view.width, H = view.height;
@@ -145,7 +146,7 @@ export async function analyzeFile(file, order) {
   const sig = faces.filter(f => f.box.h >= 0.04);
   return {
     id: `${order}-${file.name}-${file.size}`,
-    file, name: file.name, order, time, w: W, h: H,
+    file, name: file.name, order, time, w: W, h: H, sourceW, sourceH,
     viewUrl: URL.createObjectURL(viewBlob),
     thumbUrl: URL.createObjectURL(thumbBlob),
     embedding,
