@@ -280,6 +280,7 @@ function rerank(regroup) {
 async function openPhotosForEditing(files) {
   for (const it of S.editItems) URL.revokeObjectURL(it.viewUrl);
   S.editItems = [];
+  let skipped = 0;
   for (const file of files) {
     try {
       const bitmap = await createImageBitmap(file);
@@ -291,11 +292,12 @@ async function openPhotosForEditing(files) {
         adjustments: { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' },
       });
     } catch (e) {
+      skipped++;
       console.warn('photo could not be opened for editing', file.name, e);
     }
   }
   if (!S.editItems.length) {
-    S.error = 'None of the selected photos could be opened.';
+    S.error = `Could not open any of the ${files.length} selected photos.`;
     render();
     return;
   }
@@ -304,7 +306,9 @@ async function openPhotosForEditing(files) {
   S.editIndex = 0;
   S.screen = 'editor';
   S.compare = 'after';
-  S.editorError = '';
+  S.editorError = skipped
+    ? `${skipped} of ${files.length} selected photos could not be opened and were skipped.`
+    : '';
   render();
 }
 
