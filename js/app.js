@@ -197,7 +197,7 @@ function editorScreen() {
     <label class="adjust"><span>${label}<output data-value="${key}">${value}</output></span>
       <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key]}">
     </label>`).join('')}
-  ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
+  <p class="err editor-error" role="alert" ${S.editorError ? '' : 'hidden'}>${esc(S.editorError)}</p>
   <div class="editor-actions">
     ${seriesFeatures ? `
       <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse frames'}</button>
@@ -265,6 +265,15 @@ function editorIndex() {
 
 function editorItem() {
   return editorItems()[editorIndex()];
+}
+
+function setEditorError(message) {
+  S.editorError = message;
+  const error = document.querySelector('.editor-error');
+  if (error) {
+    error.textContent = message;
+    error.hidden = !message;
+  }
 }
 
 function rerank(regroup) {
@@ -521,13 +530,18 @@ async function renderEditorPreview() {
   try {
     const bitmap = await createEditorBitmap(it, 1200);
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
-    const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
-    const imageWidth = bitmap.width, imageHeight = bitmap.height;
-    canvas.width = Math.max(1, Math.round(crop.width));
-    canvas.height = Math.max(1, Math.round(crop.height));
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
+    let crop, imageWidth, imageHeight, ctx;
+    try {
+      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+      imageWidth = bitmap.width; imageHeight = bitmap.height;
+      canvas.width = Math.max(1, Math.round(crop.width));
+      canvas.height = Math.max(1, Math.round(crop.height));
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+    } finally {
+      bitmap.close();
+    }
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     if (token !== S.previewToken || S.screen !== 'editor') return;
     applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
@@ -535,7 +549,7 @@ async function renderEditorPreview() {
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
   } catch (e) {
-    if (token === S.previewToken) S.editorError = 'Could not preview these adjustments.';
+    if (token === S.previewToken) setEditorError('Could not preview this photo. Try a smaller image.');
   }
 }
 
@@ -643,15 +657,19 @@ async function saveEdited() {
   render();
   try {
     const bitmap = await createEditorBitmap(it, 4096);
-    const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
-    const imageWidth = bitmap.width, imageHeight = bitmap.height;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(crop.width));
-    canvas.height = Math.max(1, Math.round(crop.height));
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) throw new Error('Canvas unavailable');
-    ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
+    let crop, imageWidth, imageHeight, canvas, ctx;
+    try {
+      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+      imageWidth = bitmap.width; imageHeight = bitmap.height;
+      canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(crop.width));
+      canvas.height = Math.max(1, Math.round(crop.height));
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+    } finally {
+      bitmap.close();
+    }
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     if (it.adjustments?.focusPerson != null && !it.adjustments.focusMask) await getFocusMask(it);
     applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
@@ -673,7 +691,7 @@ async function saveEdited() {
     }
     S.screen = S.editorMode === 'cull' ? 'review' : 'editor';
   } catch (e) {
-    if (!e || e.name !== 'AbortError') S.editorError = 'Could not save the edited photo. Try a smaller image.';
+    if (!e || e.name !== 'AbortError') setEditorError('Could not save the edited photo. Try a smaller image.');
   } finally {
     S.editorSaving = false;
     render();
