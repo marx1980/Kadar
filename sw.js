@@ -1,5 +1,5 @@
 // Kadar offline cache. Bump VERSION when any app file changes.
-const VERSION = 'kadar-v9';
+const VERSION = 'kadar-v10';
 const MODELS = 'kadar-models'; // MediaPipe model files, kept across versions
 const FILES = [
   './',
@@ -8,6 +8,7 @@ const FILES = [
   'icon-180.png',
   'icon-512.png',
   'js/app.js',
+  'js/recent.js',
   'js/engine.js',
   'js/rank.js',
   'js/metrics.js',
