@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -29,6 +29,10 @@ const S = {
   editorFocusing: false,
   editorError: '',
   previewToken: 0,
+  focusBrush: false,
+  focusBrushTarget: 'sharp',
+  focusBrushSize: 20,
+  focusPointer: null,
 };
 
 function loadSettings() {
@@ -168,7 +172,7 @@ function editorScreen() {
     </div>
   </div>
   <div class="stage editor-stage">
-    <div class="editor-photo" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
+    <div class="editor-photo ${S.focusBrush && focusMask ? 'brushing' : ''}" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
@@ -179,15 +183,25 @@ function editorScreen() {
     <button class="btn" data-act="editorNext" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
   </div>` : ''}
   <div class="focus-tools">
-    <span>Tap photo to focus · ${focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
+    <span>${S.focusBrush ? 'Paint the mask · ' : 'Tap photo to focus · '}${focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
     <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
       <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusPerson == null ? 'disabled' : ''}>
     </label>
     <div class="focus-actions">
       <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
+      <button class="btn" data-act="focusBrush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
       <button class="btn" data-act="clearFocus" ${focusPerson == null ? 'disabled' : ''}>Reset focus</button>
       ${S.editorFocusing ? '<span role="status">Finding focus…</span>' : ''}
     </div>
+    ${S.focusBrush && focusMask ? `<div class="focus-actions mask-brush">
+      <div class="seg" role="group" aria-label="Brush effect">
+        <button data-act="focusBrushTarget" data-v="sharp" aria-pressed="${S.focusBrushTarget === 'sharp'}">Keep sharp</button>
+        <button data-act="focusBrushTarget" data-v="blur" aria-pressed="${S.focusBrushTarget === 'blur'}">Blur</button>
+      </div>
+      <label class="adjust"><span>Brush size <output data-value="focusBrushSize">${S.focusBrushSize} px</output></span>
+        <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}">
+      </label>
+    </div>` : ''}
   </div>
   <div class="crop-set"><span>Crop</span><div class="seg" role="group" aria-label="Crop aspect ratio">
   ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2']].map(([value, label]) =>
@@ -313,6 +327,8 @@ async function openPhotosForEditing(files) {
   S.error = '';
   S.editorMode = 'photos';
   S.editIndex = 0;
+  S.focusBrush = false;
+  S.focusPointer = null;
   S.screen = 'editor';
   S.compare = 'after';
   S.editorError = skipped
@@ -650,6 +666,25 @@ async function selectFocus(event, photo) {
   }
 }
 
+function paintFocusMask(event, photo) {
+  const it = editorItem();
+  const mask = it.adjustments?.focusMask;
+  const rect = photo.getBoundingClientRect();
+  if (!mask || !rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom) return;
+
+  const crop = cropRect(it.adjustments?.fusion?.width || it.sourceW || it.w,
+    it.adjustments?.fusion?.height || it.sourceH || it.h, it.adjustments?.crop);
+  const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  const sourceX = (crop.x + x * crop.width) / (it.adjustments?.fusion?.width || it.sourceW || it.w);
+  const sourceY = (crop.y + y * crop.height) / (it.adjustments?.fusion?.height || it.sourceH || it.h);
+  const keepSharp = S.focusBrushTarget === 'sharp';
+  const maskValue = keepSharp === Boolean(it.adjustments.focusPerson) ? 1 : 0;
+  paintMask(mask, sourceX, sourceY, S.focusBrushSize, maskValue);
+  requestAnimationFrame(renderEditorPreview);
+}
+
 async function saveEdited() {
   const it = editorItem();
   S.editorSaving = true;
@@ -745,6 +780,13 @@ $app.addEventListener('change', e => {
 });
 
 $app.addEventListener('input', e => {
+  const brushSize = e.target.closest('[data-focus-brush-size]');
+  if (brushSize && S.screen === 'editor') {
+    S.focusBrushSize = Number(brushSize.value);
+    const output = $app.querySelector('[data-value="focusBrushSize"]');
+    if (output) output.textContent = `${brushSize.value} px`;
+    return;
+  }
   const focusBlur = e.target.closest('[data-focus-blur]');
   if (focusBlur && S.screen === 'editor') {
     const it = editorItem();
@@ -769,9 +811,32 @@ $app.addEventListener('input', e => {
   requestAnimationFrame(renderEditorPreview);
 });
 
+$app.addEventListener('pointerdown', e => {
+  const photo = e.target.closest('.editor-photo');
+  if (!photo || S.screen !== 'editor' || !S.focusBrush || !editorItem().adjustments?.focusMask) return;
+  e.preventDefault();
+  S.focusPointer = e.pointerId;
+  photo.setPointerCapture(e.pointerId);
+  paintFocusMask(e, photo);
+});
+
+$app.addEventListener('pointermove', e => {
+  if (S.focusPointer !== e.pointerId) return;
+  const photo = e.target.closest('.editor-photo') || $app.querySelector('.editor-photo');
+  if (photo) paintFocusMask(e, photo);
+});
+
+$app.addEventListener('pointerup', e => {
+  if (S.focusPointer === e.pointerId) S.focusPointer = null;
+});
+$app.addEventListener('pointercancel', e => {
+  if (S.focusPointer === e.pointerId) S.focusPointer = null;
+});
+
 $app.addEventListener('click', e => {
   const photo = e.target.closest('.editor-photo');
   if (photo && S.screen === 'editor') {
+    if (S.focusBrush && editorItem().adjustments?.focusMask) return;
     selectFocus(e, photo);
     return;
   }
@@ -797,11 +862,13 @@ $app.addEventListener('click', e => {
     const it = S.series[S.si].items[S.fi];
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     S.editorMode = 'cull';
+    S.focusBrush = false;
+    S.focusPointer = null;
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
-  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; render(); }
-  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; render(); }
+  else if (a === 'editorBack') { S.focusBrush = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
+  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; S.focusBrush = false; S.focusPointer = null; render(); }
+  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; S.focusBrush = false; S.focusPointer = null; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
@@ -817,10 +884,22 @@ $app.addEventListener('click', e => {
     it.adjustments.focusOverlay = !it.adjustments.focusOverlay;
     render();
   }
+  else if (a === 'focusBrush') {
+    S.focusBrush = !S.focusBrush;
+    if (S.focusBrush) editorItem().adjustments.focusOverlay = true;
+    S.focusPointer = null;
+    render();
+  }
+  else if (a === 'focusBrushTarget') {
+    S.focusBrushTarget = t.dataset.v;
+    render();
+  }
   else if (a === 'clearFocus') {
     const it = editorItem();
     it.adjustments.focusPerson = null;
     it.adjustments.focusOverlay = false;
+    S.focusBrush = false;
+    S.focusPointer = null;
     render();
   }
   else if (a === 'crop') {

@@ -127,6 +127,7 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .editor-nav .btn{height:40px;padding:0 14px}
 .editor-nav svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .editor-photo{position:relative;margin:0 auto;max-height:52dvh;overflow:hidden;border-radius:6px;background:#1f2022;cursor:crosshair}
+.editor-photo.brushing{touch-action:none}
 .editor-photo img,.editor-photo canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .editor-photo [hidden]{display:none}
 .focus-tools{padding:4px var(--gut);color:var(--muted)}
@@ -134,6 +135,8 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .focus-actions{display:flex;align-items:center;gap:8px;padding:4px 0}
 .focus-actions .btn{height:40px}
 .focus-actions [aria-pressed=true]{background:var(--mark);color:#26231a}
+.mask-brush{display:grid;grid-template-columns:auto 1fr;align-items:center}
+.mask-brush .adjust{min-width:120px;padding:4px}
 .crop-set{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px var(--gut);color:var(--muted)}
 .crop-set .seg button{padding:0 12px}
 .adjust{display:grid;gap:5px;padding:8px var(--gut);color:var(--muted)}
