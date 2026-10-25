@@ -147,8 +147,17 @@ test('editor: best face source matches position and angle, preferring sharp open
     { faces: [faceAt(0.21, 100, 0.05)] },
     { faces: [faceAt(0.2, 300, 0, 40)] },
   ];
-  assert.deepEqual(bestFaceSources(items, 0), [{ faceIndex: 0, frameIndex: 1, faceIndex: 0 }]);
+  assert.deepEqual(bestFaceSources(items, 0), [{ faceIndex: 0, frameIndex: 1, sourceFaceIndex: 0 }]);
   assert.deepEqual(bestFaceSources(items, 1), []);
+  const group = [
+    { faces: [faceAt(0.2, 40, 0.9), faceAt(0.7, 40, 0.9)] },
+    { faces: [faceAt(0.7, 200), faceAt(0.21, 180)] },
+  ];
+  assert.deepEqual(bestFaceSources(group, 0), [
+    { faceIndex: 0, frameIndex: 1, sourceFaceIndex: 1 },
+    { faceIndex: 1, frameIndex: 1, sourceFaceIndex: 0 },
+  ]);
+  assert.deepEqual(bestFaceSources(group, 2), []);
 });
 
 test('editor: crop presets return centered rectangles at the requested ratio', () => {

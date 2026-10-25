@@ -1,5 +1,5 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, cropRect, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, cropRect, sharpestFrameIndex } from './editor.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -133,6 +133,8 @@ function editorScreen() {
   const series = S.series[S.si];
   const it = series.items[S.fi];
   const sharpest = sharpestFrameIndex(series.items);
+  const faceMatches = bestFaceSources(series.items, S.fi);
+  const faceSources = it.adjustments?.faceSources || [];
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
   const crop = cropRect(it.w, it.h, edits.crop);
   const aspect = crop.width / crop.height;
@@ -168,6 +170,9 @@ function editorScreen() {
   ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
   <div class="editor-actions">
     <button class="btn" data-act="pickSharpest" ${sharpest === S.fi ? 'disabled' : ''}>Pick sharpest</button>
+    ${faceSources.length
+      ? `<button class="btn" data-act="clearFaces">Undo faces</button>`
+      : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Best faces${faceMatches.length ? ` ${faceMatches.length}` : ''}</button>`}
     <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
   </div>`;
 }
@@ -278,6 +283,55 @@ async function saveKeepers() {
   }
 }
 
+async function renderFaceRepairs(ctx, target, crop, imageWidth, imageHeight, canvasWidth, canvasHeight) {
+  const matches = target.adjustments?.faceSources || [];
+  const opened = new Map();
+  const scaleX = canvasWidth / crop.width, scaleY = canvasHeight / crop.height;
+  const padded = box => {
+    const x = Math.max(0, box.x - box.w * 0.18), y = Math.max(0, box.y - box.h * 0.18);
+    return { x, y, w: Math.min(1, box.x + box.w * 1.18) - x, h: Math.min(1, box.y + box.h * 1.18) - y };
+  };
+  try {
+    for (const match of matches) {
+      const targetFace = target.faces?.[match.faceIndex];
+      const source = S.series[S.si].items[match.frameIndex];
+      const sourceFace = source?.faces?.[match.sourceFaceIndex];
+      if (!targetFace || !source || !sourceFace) continue;
+      let donor = opened.get(match.frameIndex);
+      if (!donor) {
+        donor = await createImageBitmap(source.file, {
+          resizeWidth: source.w, resizeHeight: source.h, resizeQuality: 'high',
+        });
+        opened.set(match.frameIndex, donor);
+      }
+      const dst = padded(targetFace.box), src = padded(sourceFace.box);
+      const dx = (dst.x * imageWidth - crop.x) * scaleX;
+      const dy = (dst.y * imageHeight - crop.y) * scaleY;
+      const dw = dst.w * imageWidth * scaleX, dh = dst.h * imageHeight * scaleY;
+      const patch = document.createElement('canvas');
+      patch.width = Math.max(1, Math.round(dw));
+      patch.height = Math.max(1, Math.round(dh));
+      const patchCtx = patch.getContext('2d');
+      patchCtx.drawImage(donor,
+        src.x * donor.width, src.y * donor.height, src.w * donor.width, src.h * donor.height,
+        0, 0, patch.width, patch.height);
+      patchCtx.globalCompositeOperation = 'destination-in';
+      patchCtx.save();
+      patchCtx.translate(patch.width / 2, patch.height / 2);
+      patchCtx.scale(patch.width / 2, patch.height / 2);
+      const mask = patchCtx.createRadialGradient(0, 0, 0.72, 0, 0, 1);
+      mask.addColorStop(0, 'rgba(0,0,0,1)');
+      mask.addColorStop(1, 'rgba(0,0,0,0)');
+      patchCtx.fillStyle = mask;
+      patchCtx.fillRect(-1, -1, 2, 2);
+      patchCtx.restore();
+      ctx.drawImage(patch, dx, dy);
+    }
+  } finally {
+    for (const donor of opened.values()) donor.close();
+  }
+}
+
 async function renderEditorPreview() {
   const canvas = document.getElementById('editorCanvas');
   if (!canvas) return;
@@ -292,11 +346,14 @@ async function renderEditorPreview() {
     });
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
     const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+    const imageWidth = bitmap.width, imageHeight = bitmap.height;
     canvas.width = Math.max(1, Math.round(crop.width));
     canvas.height = Math.max(1, Math.round(crop.height));
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
     bitmap.close();
+    await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
+    if (token !== S.previewToken || S.screen !== 'editor') return;
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
@@ -319,6 +376,7 @@ async function saveEdited() {
     } : undefined;
     const bitmap = options ? await createImageBitmap(it.file, options) : await createImageBitmap(it.file);
     const crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+    const imageWidth = bitmap.width, imageHeight = bitmap.height;
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(crop.width));
     canvas.height = Math.max(1, Math.round(crop.height));
@@ -326,6 +384,7 @@ async function saveEdited() {
     if (!ctx) throw new Error('Canvas unavailable');
     ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
     bitmap.close();
+    await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
     ctx.putImageData(pixels, 0, 0);
@@ -420,6 +479,20 @@ $app.addEventListener('click', e => {
     const it = S.series[S.si].items[S.fi];
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     it.adjustments.crop = t.dataset.v;
+    render();
+  }
+  else if (a === 'bestFaces') {
+    const it = S.series[S.si].items[S.fi];
+    const matches = bestFaceSources(S.series[S.si].items, S.fi);
+    if (matches.length) {
+      it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+      it.adjustments.faceSources = matches;
+      S.editorError = '';
+      render();
+    }
+  }
+  else if (a === 'clearFaces') {
+    delete S.series[S.si].items[S.fi].adjustments.faceSources;
     render();
   }
   else if (a === 'pickSharpest') {
