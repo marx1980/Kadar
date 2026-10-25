@@ -187,6 +187,9 @@ function editorScreen() {
     <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
       <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusPerson == null ? 'disabled' : ''}>
     </label>
+    <label class="adjust"><span>Edge softness<output data-value="focusFeather">${Number(edits.focusFeather ?? 0)} px</output></span>
+      <input type="range" data-focus-feather min="0" max="24" step="1" value="${edits.focusFeather ?? 0}" ${focusPerson == null ? 'disabled' : ''}>
+    </label>
     <div class="focus-actions">
       <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
       <button class="btn" data-act="focusBrush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
@@ -569,7 +572,7 @@ async function renderEditorPreview() {
   }
 }
 
-function makeMaskCanvas(mask) {
+function makeMaskCanvas(mask, softness = 0) {
   const canvas = document.createElement('canvas');
   canvas.width = mask.width;
   canvas.height = mask.height;
@@ -582,6 +585,15 @@ function makeMaskCanvas(mask) {
     pixels.data[p + 3] = alpha;
   }
   ctx.putImageData(pixels, 0, 0);
+  if (softness > 0) {
+    const softened = document.createElement('canvas');
+    softened.width = mask.width;
+    softened.height = mask.height;
+    const softenedCtx = softened.getContext('2d');
+    softenedCtx.filter = `blur(${softness}px)`;
+    softenedCtx.drawImage(canvas, 0, 0);
+    return softened;
+  }
   return canvas;
 }
 
@@ -602,7 +614,8 @@ function applyFocusEffect(ctx, edits, crop, imageWidth, imageHeight) {
   blurCtx.drawImage(ctx.canvas, margin, margin);
   blurCtx.filter = 'none';
 
-  const maskCanvas = makeMaskCanvas(mask);
+  const softness = Math.max(0, Math.min(24, Number(edits.focusFeather) || 0)) * mask.width / imageWidth;
+  const maskCanvas = makeMaskCanvas(mask, softness);
   const sx = crop.x * mask.width / imageWidth;
   const sy = crop.y * mask.height / imageHeight;
   const sw = crop.width * mask.width / imageWidth;
@@ -795,6 +808,15 @@ $app.addEventListener('input', e => {
     it.adjustments.focusBlur = Number(focusBlur.value);
     const output = $app.querySelector('[data-value="focusBlur"]');
     if (output) output.textContent = `${focusBlur.value} px`;
+    requestAnimationFrame(renderEditorPreview);
+    return;
+  }
+  const focusFeather = e.target.closest('[data-focus-feather]');
+  if (focusFeather && S.screen === 'editor') {
+    const it = editorItem();
+    it.adjustments.focusFeather = Number(focusFeather.value);
+    const output = $app.querySelector('[data-value="focusFeather"]');
+    if (output) output.textContent = `${focusFeather.value} px`;
     requestAnimationFrame(renderEditorPreview);
     return;
   }
