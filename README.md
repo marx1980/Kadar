@@ -1,10 +1,10 @@
 # Kadar
 
-Phone-first photo editor. Edit photos directly, or choose culling to group a series, review suggestions and keep the frames you want.
+Phone-first photo editor. Edit photos directly, recover better results from related frames, or review a series for photos you may want to remove.
 
-The home screen offers two workflows: **Edit photos** opens the editor without running culling analysis; **Cull a series** analyzes selected photos on the phone and opens the review workflow. Photos are never uploaded.
+The home screen leads with **Choose photos to edit**. **Resume recent edit** reopens the most recent editing session saved on this device; the browser stores the selected images and edit settings locally in IndexedDB. Browser storage can be cleared or restricted, so this is a convenience rather than a backup. **Review a series** analyzes selected photos on the phone and opens the recovery and review workflow. Photos are not uploaded.
 
-The editor supports before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, focus blur and save-as-copy. From a culled series it also offers pick-the-sharpest, frame fusion and best-face recovery. **Fuse frames** aligns and median-blends up to five similarly framed shots for still scenes; moving subjects can ghost, so inspect the result before saving. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. **Focus blur** uses an on-device person mask: tap a person or the background to choose the sharp area, adjust blur and edge softness, and optionally inspect the mask. Use **Refine mask** to paint areas to keep sharp or blur, especially along missed edges. This is subject/background separation, not a full depth map, and fine edges may be imperfect. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
+The editor supports before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, focus blur and save-as-copy. From a reviewed series it also offers the sharpest frame, frame fusion and best-face recovery. **Fuse frames** aligns and median-blends up to five similarly framed shots for still scenes; moving subjects can ghost, so inspect the result before saving. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. These are on-device recovery tools, not AI motion-blur reconstruction; optional AI repair is not currently available. **Focus blur** uses an on-device person mask: tap a person or the background to choose the sharp area, adjust blur and edge softness, and optionally inspect the mask. Use **Refine mask** to paint areas to keep sharp or blur, especially along missed edges. This is subject/background separation, not a full depth map, and fine edges may be imperfect. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
 
 ## How it works
 
@@ -16,7 +16,7 @@ The editor supports before/after preview, centered crop presets (original, squar
   - Cut: a face, or the main subject, touching the frame edge.
   - Exposure: clipped highlights or shadows.
 - **Proposals:** keep the best N per series. A frame with the only good shot of a person is kept, and a one-off photo is never proposed for deletion.
-- **Output:** Save keepers (share sheet) and Delete list (to find the rejects in Photos). A web app cannot delete from the Photos library.
+- **Output:** Save keepers (share sheet) and review delete suggestions in Photos. A web app cannot delete from or browse the full Photos library in the background; choose photos when prompted, and delete suggestions yourself in Photos.
 
 ## Files
 
@@ -28,10 +28,11 @@ The editor supports before/after preview, centered crop presets (original, squar
 - `js/exif.js`: capture time
 - `js/editor.js`: crop, pixel adjustments, burst alignment/fusion and sibling face matching
 - `js/focus.js`: on-device person segmentation for focus blur
+- `js/recent.js`: local IndexedDB storage for the resumable editing session
 - `libs/mediapipe/`: MediaPipe Tasks Vision 1.1.1 (Apache-2.0), vendored
 - `sw.js`: offline cache; models are cached after the first run
 
-Models are fetched from Google's MediaPipe model storage on first use and then cached.
+Models are fetched from Google's MediaPipe model storage on first use and then cached. Persistent access to the complete photo library or direct deletion would require a native app with Photos permissions.
 
 ## Tests
 

@@ -1,5 +1,6 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
 import { adjustPixels, bestFaceSources, cropRect, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from './editor.js';
+import { loadRecentEdit, saveRecentEdit } from './recent.js';
 
 const $app = document.getElementById('app');
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
@@ -18,6 +19,8 @@ const S = {
   editItems: [],
   editorMode: 'cull',
   editIndex: 0,
+  recentEdit: null,
+  recentError: '',
   series: [],
   si: 0, fi: 0,
   busy: false, done: 0, total: 0, error: '',
@@ -54,6 +57,7 @@ function frame(it, extra = '') {
 
 const fileInput = `<input id="pick" type="file" accept="image/*" multiple>`;
 const editorFileInput = `<input id="edit-pick" type="file" accept="image/*" multiple>`;
+let recentSaveTimer;
 
 // ---------- screens ----------
 
@@ -62,17 +66,24 @@ function home() {
   return `
   <div class="top"><h2>Kadar</h2><button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
   <main class="home">
-    <div class="wordmark">Kadar${RING.replace('class="ring"', 'class="ring" style="position:absolute"')}</div>
     ${S.busy ? `
       <div class="progress" role="status">
         <div class="bar"><i style="width:${p}%"></i></div>
         <span class="num">${S.done} / ${S.total}</span>
       </div>` : `
+      <section class="home-intro">
+        <div class="wordmark">Kadar${RING.replace('class="ring"', 'class="ring" style="position:absolute"')}</div>
+        <h1>Edit and improve your photos</h1>
+        <p>Make an edit, recover a better frame from a series, or review photos you may not need.</p>
+      </section>
       <div class="home-actions">
-        <label class="btn primary">${editorFileInput}Edit photos</label>
-        <label class="btn">${fileInput}Cull a series</label>
-      </div>`}
+        <label class="btn primary">${editorFileInput}Choose photos to edit</label>
+        ${S.recentEdit ? `<button class="btn recent-action" data-act="resumeRecent">Resume recent edit <span>${S.recentEdit.count} photos</span></button>` : ''}
+        <label class="btn secondary">${fileInput}Review a series</label>
+      </div>
+      <p class="library-note">Choose photos from your library when prompted. Kadar can’t browse or delete your library in the background.</p>`}
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
+    ${S.recentError ? `<p class="err" role="status">${esc(S.recentError)}</p>` : ''}
   </main>`;
 }
 
@@ -92,7 +103,7 @@ function seriesScreen() {
   </div>
   <div class="actions">
     <button class="btn primary" data-act="save" ${k ? '' : 'disabled'}>Save keepers</button>
-    <button class="btn" data-act="deletes" ${d ? '' : 'disabled'}>Delete list</button>
+    <button class="btn" data-act="deletes" ${d ? '' : 'disabled'}>Review delete suggestions</button>
   </div>
   <div class="list">
     ${S.series.map((s, i) => {
@@ -116,7 +127,7 @@ function reviewScreen() {
   return `
   <div class="top">
     <button class="icon" data-act="home" aria-label="Back">${ICON.back}</button>
-    <h2>Series <span class="num">${s.id}</span> / <span class="num">${S.series.length}</span></h2>
+    <h2>Review series <span class="num">${s.id}</span> / <span class="num">${S.series.length}</span></h2>
     <button class="icon" data-act="ps" aria-label="Previous series" ${S.si ? '' : 'disabled'}>${ICON.prev}</button>
     <button class="icon" data-act="ns" aria-label="Next series" ${S.si < S.series.length - 1 ? '' : 'disabled'}>${ICON.next}</button>
   </div>
@@ -165,7 +176,7 @@ function editorScreen() {
   return `
   <div class="top">
     <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
-    <h2>${seriesFeatures ? `Edit frame <span class="num">${it.frame}</span>` : `Edit photo${items.length > 1 ? ` <span class="num">${index + 1} / ${items.length}</span>` : ''}`}</h2>
+    <h2>${seriesFeatures ? `Edit / fix frame <span class="num">${it.frame}</span>` : `Edit photo${items.length > 1 ? ` <span class="num">${index + 1} / ${items.length}</span>` : ''}`}</h2>
     <div class="seg" role="group" aria-label="Before and after">
       <button data-act="compare" data-v="before" aria-pressed="${S.compare === 'before'}">Before</button>
       <button data-act="compare" data-v="after" aria-pressed="${S.compare === 'after'}">After</button>
@@ -217,11 +228,15 @@ function editorScreen() {
   <p class="err editor-error" role="alert" ${S.editorError ? '' : 'hidden'}>${esc(S.editorError)}</p>
   <div class="editor-actions">
     ${seriesFeatures ? `
-      <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse frames'}</button>
-      <button class="btn" data-act="pickSharpest" ${sharpest === index ? 'disabled' : ''}>Pick sharpest</button>
-      ${faceSources.length
-        ? `<button class="btn" data-act="clearFaces">Undo faces</button>`
-        : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Best faces${faceMatches.length ? ` ${faceMatches.length}` : ''}</button>`}
+      <div class="recovery-tools">
+        <strong>Fix with this series</strong>
+        <span>Start with the sharpest frame. Fusion is for still scenes; moving subjects may ghost.</span>
+        <button class="btn" data-act="pickSharpest" ${sharpest === index ? 'disabled' : ''}>Show sharpest frame</button>
+        <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse still-scene frames'}</button>
+        ${faceSources.length
+          ? `<button class="btn" data-act="clearFaces">Undo face repair</button>`
+          : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Try sibling-face repair${faceMatches.length ? ` (${faceMatches.length})` : ''}</button>`}
+      </div>
     ` : ''}
     <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
   </div>`;
@@ -232,8 +247,9 @@ function deletesScreen() {
   return `
   <div class="top">
     <button class="icon" data-act="home" aria-label="Back">${ICON.back}</button>
-    <h2>Delete <span class="num">${deletes().length}</span></h2>
+    <h2>Delete suggestions <span class="num">${deletes().length}</span></h2>
   </div>
+  <p class="delete-note">These are your review suggestions, not deleted files. Select and delete photos yourself in your Photos library; Kadar cannot remove them directly.</p>
   ${groups.map(g => `<div class="sec">Series <span class="num">${g.s.id}</span></div>
     <div class="grid">${g.del.map(it => `<span class="fr"><img src="${it.thumbUrl}" alt=""><span class="fn">${it.frame}</span></span>`).join('')}</div>`).join('')}
   <div style="height:32px"></div>`;
@@ -268,6 +284,7 @@ function render() {
     bindSwipe();
   }
   if (S.screen === 'editor') renderEditorPreview();
+  if (S.screen === 'editor' && S.editorMode === 'photos') scheduleRecentEditSave();
 }
 
 // ---------- actions ----------
@@ -325,9 +342,14 @@ async function openPhotosForEditing(files) {
   if (!S.editItems.length) {
     S.error = `Could not open any of the ${files.length} selected photos.`;
     render();
+    loadRecentEdit().then(session => {
+      if (session?.photos?.length) S.recentEdit = { count: session.photos.length, updatedAt: session.updatedAt };
+      if (S.screen === 'home') render();
+    }).catch(() => {});
     return;
   }
   S.error = '';
+  S.recentError = '';
   S.editorMode = 'photos';
   S.editIndex = 0;
   S.focusBrush = false;
@@ -338,6 +360,56 @@ async function openPhotosForEditing(files) {
     ? `${skipped} of ${files.length} selected photos could not be opened and were skipped.`
     : '';
   render();
+}
+
+function scheduleRecentEditSave() {
+  clearTimeout(recentSaveTimer);
+  recentSaveTimer = setTimeout(async () => {
+    if (!S.editItems.length) return;
+    try {
+      await saveRecentEdit(S.editItems, S.editIndex);
+      S.recentEdit = { count: S.editItems.length, updatedAt: Date.now() };
+      S.recentError = '';
+    } catch (e) {
+      S.recentError = 'Could not save this session on this device. Your current editing session is still open.';
+    }
+  }, 500);
+}
+
+async function resumeRecentEdit() {
+  try {
+    const session = await loadRecentEdit();
+    if (!session?.photos?.length) {
+      S.recentEdit = null;
+      S.error = 'There is no saved editing session on this device.';
+      render();
+      return;
+    }
+    for (const it of S.editItems) URL.revokeObjectURL(it.viewUrl);
+    S.editItems = session.photos.map(photo => {
+      const file = new File([photo.blob], photo.name, {
+        type: photo.type || photo.blob.type,
+        lastModified: photo.lastModified || Date.now(),
+      });
+      return {
+        file, name: photo.name, w: photo.width, h: photo.height,
+        sourceW: photo.width, sourceH: photo.height,
+        viewUrl: URL.createObjectURL(file), adjustments: photo.adjustments || {},
+      };
+    });
+    S.editIndex = Math.max(0, Math.min(session.index || 0, S.editItems.length - 1));
+    S.editorMode = 'photos';
+    S.focusBrush = false;
+    S.focusPointer = null;
+    S.error = '';
+    S.editorError = '';
+    S.compare = 'after';
+    S.screen = 'editor';
+    render();
+  } catch (e) {
+    S.error = 'Could not reopen the saved session. Choose the photos again to continue.';
+    render();
+  }
 }
 
 async function analyze(files) {
@@ -695,6 +767,7 @@ function paintFocusMask(event, photo) {
   const keepSharp = S.focusBrushTarget === 'sharp';
   const maskValue = keepSharp === Boolean(it.adjustments.focusPerson) ? 1 : 0;
   paintMask(mask, sourceX, sourceY, S.focusBrushSize, maskValue);
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
   requestAnimationFrame(renderEditorPreview);
 }
 
@@ -790,8 +863,16 @@ function bindSwipe() {
 }
 
 $app.addEventListener('change', e => {
-  if (e.target.id === 'pick' && e.target.files.length) analyze([...e.target.files]);
-  if (e.target.id === 'edit-pick' && e.target.files.length) openPhotosForEditing([...e.target.files]);
+  if (e.target.id === 'pick' && e.target.files.length) {
+    const files = [...e.target.files];
+    e.target.value = '';
+    analyze(files);
+  }
+  if (e.target.id === 'edit-pick' && e.target.files.length) {
+    const files = [...e.target.files];
+    e.target.value = '';
+    openPhotosForEditing(files);
+  }
 });
 
 $app.addEventListener('input', e => {
@@ -808,6 +889,7 @@ $app.addEventListener('input', e => {
     it.adjustments.focusBlur = Number(focusBlur.value);
     const output = $app.querySelector('[data-value="focusBlur"]');
     if (output) output.textContent = `${focusBlur.value} px`;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
     requestAnimationFrame(renderEditorPreview);
     return;
   }
@@ -817,6 +899,7 @@ $app.addEventListener('input', e => {
     it.adjustments.focusFeather = Number(focusFeather.value);
     const output = $app.querySelector('[data-value="focusFeather"]');
     if (output) output.textContent = `${focusFeather.value} px`;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
     requestAnimationFrame(renderEditorPreview);
     return;
   }
@@ -832,6 +915,7 @@ $app.addEventListener('input', e => {
       : input.dataset.adjust === 'sharpness' ? sharpness.toFixed(1)
       : `${input.value}%`;
   }
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
   requestAnimationFrame(renderEditorPreview);
 });
 
@@ -870,6 +954,7 @@ $app.addEventListener('click', e => {
   const a = t.dataset.act;
   if (a === 'settings') { S.sheet = true; render(); }
   else if (a === 'close') { S.sheet = false; render(); }
+  else if (a === 'resumeRecent') resumeRecentEdit();
   else if (a === 'set') {
     const k = t.dataset.k;
     S.settings[k] = k === 'keep' ? Number(t.dataset.v) : t.dataset.v;
