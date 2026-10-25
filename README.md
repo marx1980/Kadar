@@ -1,10 +1,10 @@
 # Kadar
 
-Phone web app that groups photos into series, checks each frame and proposes which to keep and which to delete.
+Phone-first photo editor. Edit photos directly, or choose culling to group a series, review suggestions and keep the frames you want.
 
-Phase 1 of the plan: culling. Runs entirely on the phone; photos are never uploaded.
+The home screen offers two workflows: **Edit photos** opens the editor without running culling analysis; **Cull a series** analyzes selected photos on the phone and opens the review workflow. Photos are never uploaded.
 
-Editor tools are available from a reviewed frame: before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, pick the sharpest frame in a series, and save-as-copy. **Fuse frames** aligns and median-blends up to five similarly framed shots for still scenes; moving subjects can ghost, so inspect the result before saving. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. **Focus blur** uses an on-device person mask: tap a person or the background to choose the sharp area, adjust blur, and optionally inspect the mask. This is subject/background separation, not a full depth map, and fine edges may be imperfect. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
+The editor supports before/after preview, centered crop presets (original, square, 4:5 portrait, 3:2 landscape), exposure, contrast, colour saturation, sharpening, focus blur and save-as-copy. From a culled series it also offers pick-the-sharpest, frame fusion and best-face recovery. **Fuse frames** aligns and median-blends up to five similarly framed shots for still scenes; moving subjects can ghost, so inspect the result before saving. **Best faces** can blend a sharper, open-eyed face from a similarly framed sibling photo; inspect the result before saving, as this experimental transplant can show seams. **Focus blur** uses an on-device person mask: tap a person or the background to choose the sharp area, adjust blur, and optionally inspect the mask. This is subject/background separation, not a full depth map, and fine edges may be imperfect. The original is unchanged. Editing is on-device; exported copies are JPEGs capped at 4096 px on the long edge.
 
 ## How it works
 

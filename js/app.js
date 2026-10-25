@@ -15,6 +15,9 @@ const ICON = {
 const S = {
   screen: 'home',
   items: [],
+  editItems: [],
+  editorMode: 'cull',
+  editIndex: 0,
   series: [],
   si: 0, fi: 0,
   busy: false, done: 0, total: 0, error: '',
@@ -46,13 +49,14 @@ function frame(it, extra = '') {
 }
 
 const fileInput = `<input id="pick" type="file" accept="image/*" multiple>`;
+const editorFileInput = `<input id="edit-pick" type="file" accept="image/*" multiple>`;
 
 // ---------- screens ----------
 
 function home() {
   const p = S.total ? Math.round(100 * S.done / S.total) : 0;
   return `
-  <div class="top"><h2></h2><button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
+  <div class="top"><h2>Kadar</h2><button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
   <main class="home">
     <div class="wordmark">Kadar${RING.replace('class="ring"', 'class="ring" style="position:absolute"')}</div>
     ${S.busy ? `
@@ -60,7 +64,10 @@ function home() {
         <div class="bar"><i style="width:${p}%"></i></div>
         <span class="num">${S.done} / ${S.total}</span>
       </div>` : `
-      <label class="btn primary">${fileInput}Select photos</label>`}
+      <div class="home-actions">
+        <label class="btn primary">${editorFileInput}Edit photos</label>
+        <label class="btn">${fileInput}Cull a series</label>
+      </div>`}
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
   </main>`;
 }
@@ -132,10 +139,12 @@ function reviewScreen() {
 }
 
 function editorScreen() {
-  const series = S.series[S.si];
-  const it = series.items[S.fi];
-  const sharpest = sharpestFrameIndex(series.items);
-  const faceMatches = bestFaceSources(series.items, S.fi);
+  const items = editorItems();
+  const it = editorItem();
+  const index = editorIndex();
+  const seriesFeatures = S.editorMode === 'cull';
+  const sharpest = seriesFeatures ? sharpestFrameIndex(items) : -1;
+  const faceMatches = seriesFeatures ? bestFaceSources(items, index) : [];
   const faceSources = it.adjustments?.faceSources || [];
   const fusion = it.adjustments?.fusion;
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
@@ -152,7 +161,7 @@ function editorScreen() {
   return `
   <div class="top">
     <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
-    <h2>Edit frame <span class="num">${it.frame}</span></h2>
+    <h2>${seriesFeatures ? `Edit frame <span class="num">${it.frame}</span>` : `Edit photo${items.length > 1 ? ` <span class="num">${index + 1} / ${items.length}</span>` : ''}`}</h2>
     <div class="seg" role="group" aria-label="Before and after">
       <button data-act="compare" data-v="before" aria-pressed="${S.compare === 'before'}">Before</button>
       <button data-act="compare" data-v="after" aria-pressed="${S.compare === 'after'}">After</button>
@@ -164,6 +173,11 @@ function editorScreen() {
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
   </div>
+  ${!seriesFeatures && items.length > 1 ? `<div class="editor-nav">
+    <button class="btn" data-act="editorPrev" ${index ? '' : 'disabled'}>${ICON.prev}Previous</button>
+    <span class="num">${index + 1} / ${items.length}</span>
+    <button class="btn" data-act="editorNext" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
+  </div>` : ''}
   <div class="focus-tools">
     <span>Tap photo to focus · ${focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
     <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
@@ -185,11 +199,13 @@ function editorScreen() {
     </label>`).join('')}
   ${S.editorError ? `<p class="err editor-error" role="alert">${esc(S.editorError)}</p>` : ''}
   <div class="editor-actions">
-    <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (series.items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse frames'}</button>
-    <button class="btn" data-act="pickSharpest" ${sharpest === S.fi ? 'disabled' : ''}>Pick sharpest</button>
-    ${faceSources.length
-      ? `<button class="btn" data-act="clearFaces">Undo faces</button>`
-      : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Best faces${faceMatches.length ? ` ${faceMatches.length}` : ''}</button>`}
+    ${seriesFeatures ? `
+      <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse frames'}</button>
+      <button class="btn" data-act="pickSharpest" ${sharpest === index ? 'disabled' : ''}>Pick sharpest</button>
+      ${faceSources.length
+        ? `<button class="btn" data-act="clearFaces">Undo faces</button>`
+        : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Best faces${faceMatches.length ? ` ${faceMatches.length}` : ''}</button>`}
+    ` : ''}
     <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
   </div>`;
 }
@@ -239,6 +255,18 @@ function render() {
 
 // ---------- actions ----------
 
+function editorItems() {
+  return S.editorMode === 'photos' ? S.editItems : S.series[S.si]?.items || [];
+}
+
+function editorIndex() {
+  return S.editorMode === 'photos' ? S.editIndex : S.fi;
+}
+
+function editorItem() {
+  return editorItems()[editorIndex()];
+}
+
 function rerank(regroup) {
   if (regroup) {
     S.series = rankAll(S.items, S.settings);
@@ -247,6 +275,37 @@ function rerank(regroup) {
   } else {
     for (const s of S.series) rankSeries(s, S.settings);
   }
+}
+
+async function openPhotosForEditing(files) {
+  for (const it of S.editItems) URL.revokeObjectURL(it.viewUrl);
+  S.editItems = [];
+  for (const file of files) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const { width, height } = bitmap;
+      bitmap.close();
+      S.editItems.push({
+        file, name: file.name, w: width, h: height, sourceW: width, sourceH: height,
+        viewUrl: URL.createObjectURL(file),
+        adjustments: { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' },
+      });
+    } catch (e) {
+      console.warn('photo could not be opened for editing', file.name, e);
+    }
+  }
+  if (!S.editItems.length) {
+    S.error = 'None of the selected photos could be opened.';
+    render();
+    return;
+  }
+  S.error = '';
+  S.editorMode = 'photos';
+  S.editIndex = 0;
+  S.screen = 'editor';
+  S.compare = 'after';
+  S.editorError = '';
+  render();
 }
 
 async function analyze(files) {
@@ -453,7 +512,7 @@ async function createEditorBitmap(it, maxSide) {
 async function renderEditorPreview() {
   const canvas = document.getElementById('editorCanvas');
   if (!canvas) return;
-  const it = S.series[S.si].items[S.fi];
+  const it = editorItem();
   const token = ++S.previewToken;
   try {
     const bitmap = await createEditorBitmap(it, 1200);
@@ -550,7 +609,7 @@ async function getFocusMask(it) {
 
 async function selectFocus(event, photo) {
   if (S.editorFocusing) return;
-  const it = S.series[S.si].items[S.fi];
+  const it = editorItem();
   const rect = photo.getBoundingClientRect();
   const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
   const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
@@ -574,7 +633,7 @@ async function selectFocus(event, photo) {
 }
 
 async function saveEdited() {
-  const it = S.series[S.si].items[S.fi];
+  const it = editorItem();
   S.editorSaving = true;
   S.editorError = '';
   render();
@@ -608,7 +667,7 @@ async function saveEdited() {
       document.body.appendChild(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
-    S.screen = 'review';
+    S.screen = S.editorMode === 'cull' ? 'review' : 'editor';
   } catch (e) {
     if (!e || e.name !== 'AbortError') S.editorError = 'Could not save the edited photo. Try a smaller image.';
   } finally {
@@ -619,7 +678,7 @@ async function saveEdited() {
 
 async function fuseSeries() {
   const series = S.series[S.si];
-  const target = series.items[S.fi];
+  const target = editorItem();
   S.editorFusing = true;
   S.editorError = '';
   render();
@@ -660,12 +719,13 @@ function bindSwipe() {
 
 $app.addEventListener('change', e => {
   if (e.target.id === 'pick' && e.target.files.length) analyze([...e.target.files]);
+  if (e.target.id === 'edit-pick' && e.target.files.length) openPhotosForEditing([...e.target.files]);
 });
 
 $app.addEventListener('input', e => {
   const focusBlur = e.target.closest('[data-focus-blur]');
   if (focusBlur && S.screen === 'editor') {
-    const it = S.series[S.si].items[S.fi];
+    const it = editorItem();
     it.adjustments.focusBlur = Number(focusBlur.value);
     const output = $app.querySelector('[data-value="focusBlur"]');
     if (output) output.textContent = `${focusBlur.value} px`;
@@ -674,7 +734,7 @@ $app.addEventListener('input', e => {
   }
   const input = e.target.closest('[data-adjust]');
   if (!input || S.screen !== 'editor') return;
-  const it = S.series[S.si].items[S.fi];
+  const it = editorItem();
   it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
   it.adjustments[input.dataset.adjust] = Number(input.value);
   const output = $app.querySelector(`[data-value="${input.dataset.adjust}"]`);
@@ -714,38 +774,44 @@ $app.addEventListener('click', e => {
   else if (a === 'edit') {
     const it = S.series[S.si].items[S.fi];
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    S.editorMode = 'cull';
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.screen = 'review'; render(); }
+  else if (a === 'editorBack') { S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
+  else if (a === 'editorPrev' && S.editorMode === 'photos' && S.editIndex > 0) { S.editIndex--; render(); }
+  else if (a === 'editorNext' && S.editorMode === 'photos' && S.editIndex < S.editItems.length - 1) { S.editIndex++; render(); }
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
-    delete S.series[S.si].items[S.fi].adjustments.fusion;
-    delete S.series[S.si].items[S.fi].adjustments.focusMask;
-    S.series[S.si].items[S.fi].adjustments.focusPerson = null;
-    S.series[S.si].items[S.fi].adjustments.focusOverlay = false;
+    const it = editorItem();
+    delete it.adjustments.fusion;
+    delete it.adjustments.focusMask;
+    it.adjustments.focusPerson = null;
+    it.adjustments.focusOverlay = false;
     render();
   }
   else if (a === 'focusOverlay') {
-    const it = S.series[S.si].items[S.fi];
+    const it = editorItem();
     it.adjustments.focusOverlay = !it.adjustments.focusOverlay;
     render();
   }
   else if (a === 'clearFocus') {
-    const it = S.series[S.si].items[S.fi];
+    const it = editorItem();
     it.adjustments.focusPerson = null;
     it.adjustments.focusOverlay = false;
     render();
   }
   else if (a === 'crop') {
-    const it = S.series[S.si].items[S.fi];
+    const it = editorItem();
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     it.adjustments.crop = t.dataset.v;
     render();
   }
   else if (a === 'bestFaces') {
-    const it = S.series[S.si].items[S.fi];
-    const matches = bestFaceSources(S.series[S.si].items, S.fi);
+    const items = editorItems();
+    const index = editorIndex();
+    const it = editorItem();
+    const matches = bestFaceSources(items, index);
     if (matches.length) {
       it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
       it.adjustments.faceSources = matches;
@@ -754,16 +820,17 @@ $app.addEventListener('click', e => {
     }
   }
   else if (a === 'clearFaces') {
-    delete S.series[S.si].items[S.fi].adjustments.faceSources;
+    delete editorItem().adjustments.faceSources;
     render();
   }
   else if (a === 'pickSharpest') {
-    const sharpest = sharpestFrameIndex(S.series[S.si].items);
+    const items = editorItems();
+    const sharpest = sharpestFrameIndex(items);
     if (sharpest >= 0) {
       S.fi = sharpest;
       S.compare = 'after';
       S.editorError = '';
-      const it = S.series[S.si].items[S.fi];
+      const it = editorItem();
       it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
       render();
     }
