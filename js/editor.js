@@ -204,11 +204,43 @@ export function cropRect(width, height, preset = 'original', options = {}) {
   };
 }
 
+const HSL_CHANNELS = [
+  ['Red', 0], ['Orange', 30], ['Yellow', 60], ['Green', 120],
+  ['Aqua', 180], ['Blue', 240], ['Purple', 275], ['Magenta', 315],
+];
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const delta = max - min;
+  let hue = 0;
+  const luminance = (max + min) / 2;
+  let saturation = 0;
+  if (delta) {
+    saturation = delta / (1 - Math.abs(2 * luminance - 1));
+    if (max === r) hue = ((g - b) / delta) % 6;
+    else if (max === g) hue = (b - r) / delta + 2;
+    else hue = (r - g) / delta + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+  return [hue, saturation, luminance];
+}
+function hslToRgb(hue, saturation, luminance) {
+  const c = (1 - Math.abs(2 * luminance - 1)) * saturation;
+  const h = ((hue % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs(h % 2 - 1));
+  const [r, g, b] = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x]
+    : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];
+  const m = luminance - c / 2;
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
 export function adjustPixels(data, width, height, adjustments = {}) {
   if (!data || data.length !== width * height * 4) throw new RangeError('Pixel data does not match dimensions');
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));
   const contrast = Math.max(-100, Math.min(100, Number(adjustments.contrast) || 0));
   const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  const curve = Math.max(-100, Math.min(100, Number(adjustments.curve) || 0)) / 100;
   const saturation = Math.max(0, Math.min(200, Number(adjustments.saturation ?? 100) || 0)) / 100;
   const sharpness = Math.max(0, Math.min(2, Number(adjustments.sharpness) || 0));
   const temperature = Math.max(-100, Math.min(100, Number(adjustments.temperature) || 0));
@@ -218,6 +250,17 @@ export function adjustPixels(data, width, height, adjustments = {}) {
   const localMask = adjustments.localMask;
   const localExposure = Number(adjustments.localExposure) || 0;
   const localSaturation = Number(adjustments.localSaturation) || 0;
+  const localContrast = Math.max(-100, Math.min(100, Number(adjustments.localContrast) || 0));
+  const localContrastFactor = (259 * (localContrast + 255)) / (255 * (259 - localContrast));
+  const activeHsl = HSL_CHANNELS.map(([name, center]) => {
+    return {
+      center,
+      hue: Math.max(-180, Math.min(180, Number(adjustments[`hsl${name}Hue`]) || 0)),
+      saturation: Math.max(-100, Math.min(100, Number(adjustments[`hsl${name}Saturation`]) || 0)) / 100,
+      luminance: Math.max(-100, Math.min(100, Number(adjustments[`hsl${name}Luminance`]) || 0)) / 100,
+      active: ['Hue', 'Saturation', 'Luminance'].some(suffix => Number(adjustments[`hsl${name}${suffix}`] || 0) !== 0),
+    };
+  }).filter(channel => channel.active);
 
   for (let i = 0; i < data.length; i += 4) {
     const pixelIndex = i / 4;
@@ -236,15 +279,43 @@ export function adjustPixels(data, width, height, adjustments = {}) {
     g += tint * 0.35;
     b -= temperature * 0.65 + tint * 0.2;
     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+    const curveX = Math.max(0, Math.min(1, gray / 255));
+    const curvedGray = (curveX + curve * (curveX - 0.5) * (1 - Math.abs(2 * curveX - 1)) * 0.8) * 255;
+    r += curvedGray - gray;
+    g += curvedGray - gray;
+    b += curvedGray - gray;
     const mask = localMask && localMask.data?.length === localMask.width * localMask.height
       ? localMask.data[Math.min(localMask.height - 1, Math.floor(py / height * localMask.height)) *
         localMask.width + Math.min(localMask.width - 1, Math.floor(px / width * localMask.width))]
       : 0;
     const localExposureFactor = 2 ** (Math.max(-2, Math.min(2, localExposure)) * mask);
     const localSat = 1 + Math.max(-1, Math.min(1, localSaturation / 100)) * mask;
-    data[i] = (gray + (r - gray) * saturation * localSat) * localExposureFactor;
-    data[i + 1] = (gray + (g - gray) * saturation * localSat) * localExposureFactor;
-    data[i + 2] = (gray + (b - gray) * saturation * localSat) * localExposureFactor;
+    r = ((gray + (r - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    g = ((gray + (g - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    b = ((gray + (b - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    if (activeHsl.length) {
+      const [hue, hslSaturation, luminance] = rgbToHsl(r, g, b);
+      let hueShift = 0, saturationShift = 0, luminanceShift = 0, totalWeight = 0;
+      for (const channel of hslSaturation > 0.001 ? activeHsl : []) {
+        const distance = Math.abs(((hue - channel.center + 540) % 360) - 180);
+        const weight = Math.max(0, 1 - distance / 38);
+        hueShift += channel.hue * weight;
+        saturationShift += channel.saturation * weight;
+        luminanceShift += channel.luminance * weight;
+        totalWeight += weight;
+      }
+      if (totalWeight) {
+        [data[i], data[i + 1], data[i + 2]] = hslToRgb(
+          hue + hueShift / totalWeight,
+          Math.max(0, Math.min(1, hslSaturation + saturationShift / totalWeight)),
+          Math.max(0, Math.min(1, luminance + luminanceShift / totalWeight)),
+        );
+      } else {
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      }
+    } else {
+      data[i] = r; data[i + 1] = g; data[i + 2] = b;
+    }
   }
   if (!sharpness || !width || !height) return data;
 

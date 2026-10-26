@@ -10,6 +10,7 @@ const BUILT_IN_LOOKS = {
   vivid: { saturation: 128, contrast: 8, sharpness: 0.3 },
   mono: { saturation: 0, contrast: 12 },
 };
+const HSL_NAMES = ['Red', 'Orange', 'Yellow', 'Green', 'Aqua', 'Blue', 'Purple', 'Magenta'];
 function loadCustomLooks() {
   try {
     const looks = JSON.parse(localStorage.getItem('kadar-custom-looks') || '[]');
@@ -47,6 +48,12 @@ function effectiveAdjustments(edits = {}) {
     result[key] = base + (value - (key === 'saturation' ? 100 : 0)) * amount;
   }
   return result;
+}
+function lookOffset(key, edits = {}) {
+  const look = lookById(edits.look)?.adjustments;
+  if (!look || !(key in look)) return 0;
+  const neutral = key === 'saturation' ? 100 : 0;
+  return (Number(look[key]) - neutral) * Math.max(0, Math.min(100, Number(edits.lookAmount ?? 100))) / 100;
 }
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
 const XMARK = '<svg class="x" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><line vector-effect="non-scaling-stroke" x1="14" y1="86" x2="86" y2="14"/></svg>';
@@ -209,6 +216,7 @@ function editorScreen() {
   const sharpest = seriesFeatures ? sharpestFrameIndex(items) : -1;
   const faceMatches = seriesFeatures ? bestFaceSources(items, index) : [];
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+  const shownEdits = effectiveAdjustments(edits);
   const faceSources = edits.faceSources || [];
   const fusion = edits.fusion;
   const history = historyFor(it);
@@ -216,14 +224,15 @@ function editorScreen() {
   const crop = cropRect(dimensions.width, dimensions.height, edits.crop, edits);
   const aspect = crop.width / crop.height;
   const controls = [
-    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(edits.exposure || 0).toFixed(1)} EV`],
-    ['contrast', 'Contrast', -50, 50, 1, `${Number(edits.contrast || 0)}%`],
-    ['highlights', 'Highlights', -100, 100, 1, `${Number(edits.highlights || 0)}%`],
-    ['shadows', 'Shadows', -100, 100, 1, `${Number(edits.shadows || 0)}%`],
-    ['temperature', 'Temperature', -100, 100, 1, `${Number(edits.temperature || 0)}`],
-    ['tint', 'Tint', -100, 100, 1, `${Number(edits.tint || 0)}`],
-    ['saturation', 'Colour', 0, 200, 1, `${Number(edits.saturation ?? 100)}%`],
-    ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(edits.sharpness || 0).toFixed(1)}`],
+    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(shownEdits.exposure || 0).toFixed(1)} EV`],
+    ['contrast', 'Contrast', -50, 50, 1, `${Number(shownEdits.contrast || 0)}%`],
+    ['highlights', 'Highlights', -100, 100, 1, `${Number(shownEdits.highlights || 0)}%`],
+    ['shadows', 'Shadows', -100, 100, 1, `${Number(shownEdits.shadows || 0)}%`],
+    ['curve', 'Tone curve', -100, 100, 1, `${Number(shownEdits.curve || 0)}%`],
+    ['temperature', 'Temperature', -100, 100, 1, `${Number(shownEdits.temperature || 0)}`],
+    ['tint', 'Tint', -100, 100, 1, `${Number(shownEdits.tint || 0)}`],
+    ['saturation', 'Colour', 0, 200, 1, `${Number(shownEdits.saturation ?? 100)}%`],
+    ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(shownEdits.sharpness || 0).toFixed(1)}`],
   ];
   const focusPerson = edits.focusPerson;
   const focusMask = edits.focusMask;
@@ -265,15 +274,26 @@ function editorScreen() {
   </details>
   <details class="edit-group" open>
     <summary>Light</summary>
-    ${controls.slice(0, 4).map(([key, label, min, max, step, value]) => `
+    ${controls.slice(0, 5).map(([key, label, min, max, step, value]) => `
       <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
-        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key] ?? 0}"></label>`).join('')}
+        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? 0}"></label>`).join('')}
   </details>
   <details class="edit-group">
     <summary>Color</summary>
-    ${controls.slice(4, 7).map(([key, label, min, max, step, value]) => `
+    ${controls.slice(5, 8).map(([key, label, min, max, step, value]) => `
       <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
-        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key] ?? (key === 'saturation' ? 100 : 0)}"></label>`).join('')}
+        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? (key === 'saturation' ? 100 : 0)}"></label>`).join('')}
+    <details class="hsl-group">
+      <summary>Color mix · HSL</summary>
+      ${HSL_NAMES.map(name => `<details class="hsl-channel"><summary>${name}</summary>
+        ${[['Hue', -180, 180, '°'], ['Saturation', -100, 100, '%'], ['Luminance', -100, 100, '%']].map(([axis, min, max, unit]) => {
+          const key = `hsl${name}${axis}`;
+          const value = Number(shownEdits[key] || 0);
+          return `<label class="adjust"><span>${axis}<output data-value="${key}">${value}${unit}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+            <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="1" value="${value}"></label>`;
+        }).join('')}
+      </details>`).join('')}
+    </details>
   </details>
   <details class="edit-group">
     <summary>Detail and retouch</summary>
@@ -292,6 +312,8 @@ function editorScreen() {
         <input type="range" data-adjust="localExposure" min="-2" max="2" step="0.1" value="${edits.localExposure || 0}"></label>
       <label class="adjust"><span>Brush saturation<output data-value="localSaturation">${Number(edits.localSaturation || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localSaturation">Reset</button></span>
         <input type="range" data-adjust="localSaturation" min="-100" max="100" step="1" value="${edits.localSaturation || 0}"></label>
+      <label class="adjust"><span>Brush contrast<output data-value="localContrast">${Number(edits.localContrast || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localContrast">Reset</button></span>
+        <input type="range" data-adjust="localContrast" min="-100" max="100" step="1" value="${edits.localContrast || 0}"></label>
       <label class="adjust"><span>Brush size<output data-value="localBrushSize">${S.focusBrushSize} px</output></span>
         <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}"></label>` : ''}
     ${S.healMode ? '<p class="depth-note">Tap a small distraction to soften it using nearby pixels. Results vary; use Undo if it looks wrong.</p>' : ''}
@@ -1231,7 +1253,7 @@ $app.addEventListener('input', e => {
     if (undo) undo.disabled = false;
   }
   it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
-  it.adjustments[input.dataset.adjust] = Number(input.value);
+  it.adjustments[input.dataset.adjust] = Number(input.value) - lookOffset(input.dataset.adjust, it.adjustments);
   const output = $app.querySelector(`[data-value="${input.dataset.adjust}"]`);
   if (output) {
     const { exposure, contrast, saturation, sharpness } = it.adjustments;
@@ -1239,6 +1261,7 @@ $app.addEventListener('input', e => {
       ? `${Number(input.value).toFixed(1)} EV`
       : ['sharpness', 'temperature', 'tint'].includes(input.dataset.adjust) ? input.dataset.adjust === 'sharpness'
         ? sharpness.toFixed(1) : input.value
+        : input.dataset.adjust.startsWith('hsl') && input.dataset.adjust.endsWith('Hue') ? `${input.value}°`
         : `${input.value}%`;
   }
   if (input.dataset.adjust === 'lookAmount') {
@@ -1373,11 +1396,12 @@ $app.addEventListener('click', e => {
     const edits = editorItem().adjustments;
     const key = t.dataset.k;
     const defaults = {
-      exposure: 0, contrast: 0, highlights: 0, shadows: 0, temperature: 0, tint: 0,
+      exposure: 0, contrast: 0, highlights: 0, shadows: 0, curve: 0, temperature: 0, tint: 0,
       saturation: 100, sharpness: 0, lookAmount: 100, scale: 100, x: 50, y: 50,
-      localExposure: 0, localSaturation: 0, focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
+      localExposure: 0, localSaturation: 0, localContrast: 0, focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
     };
-    if (key in defaults) edits[key] = defaults[key];
+    if (key in defaults) edits[key] = defaults[key] - lookOffset(key, edits);
+    else if (/^hsl(Red|Orange|Yellow|Green|Aqua|Blue|Purple|Magenta)(Hue|Saturation|Luminance)$/.test(key)) edits[key] = -lookOffset(key, edits);
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
   }
@@ -1394,9 +1418,11 @@ $app.addEventListener('click', e => {
     }
     const it = editorItem();
     recordUndo(it);
+    const currentAdjustments = effectiveAdjustments(it.adjustments);
     const adjustments = Object.fromEntries(
-      ['exposure', 'contrast', 'highlights', 'shadows', 'temperature', 'tint', 'saturation', 'sharpness']
-        .map(key => [key, Number(it.adjustments[key] ?? (key === 'saturation' ? 100 : 0))]),
+      ['exposure', 'contrast', 'highlights', 'shadows', 'curve', 'temperature', 'tint', 'saturation', 'sharpness',
+        ...HSL_NAMES.flatMap(channel => [`hsl${channel}Hue`, `hsl${channel}Saturation`, `hsl${channel}Luminance`])]
+        .map(key => [key, Number(currentAdjustments[key] ?? (key === 'saturation' ? 100 : 0))]),
     );
     const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     customLooks.push({ id, name: name.slice(0, 24), adjustments });

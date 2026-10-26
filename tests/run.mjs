@@ -138,6 +138,15 @@ test('editor: white balance and tone controls affect pixel values', () => {
   adjustPixels(lifted, 1, 1, { shadows: 50 });
   assert.ok(lifted[0] > 20);
 });
+test('editor: tone curve and per-color HSL adjustments affect only their targets', () => {
+  const curve = new Uint8ClampedArray([64, 64, 64, 255]);
+  adjustPixels(curve, 1, 1, { curve: 100 });
+  assert.ok(curve[0] < 64);
+  const colors = new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 255]);
+  adjustPixels(colors, 2, 1, { hslRedSaturation: -100 });
+  assert.ok(colors[0] > 120 && colors[0] < 135);
+  assert.deepEqual([...colors.slice(4, 8)], [0, 0, 255, 255]);
+});
 test('editor: unsharp mask increases local edge contrast and preserves alpha', () => {
   const pixels = new Uint8ClampedArray(5 * 5 * 4);
   for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 100, 100, 255], i);
