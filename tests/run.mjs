@@ -4,6 +4,9 @@ import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
 import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
+import { readFileSync } from 'node:fs';
+import { HELP, wordCount } from '../js/help.js';
+import { TUTORIALS, meets, stepIndex, firstStep, loadProgress, saveProgress, markDone, resetProgress, STORAGE_KEY } from '../js/tutorials.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -386,6 +389,77 @@ test('expression alone never removes a one-off photo', () => {
   const [s] = rankAll([item(0, E1, { faces: [face(0.3, { awkward: 0.95 })] })], DEFAULTS);
   assert.equal(decide(s.items[0]), 'keep');
   assert.deepEqual(s.items[0].reasons, ['Expression']);
+});
+
+
+// ---------- help catalogue ----------
+test('help texts are 30-50 words', () => {
+  for (const [id, text] of Object.entries(HELP)) {
+    const n = wordCount(text);
+    assert.ok(n >= 30 && n <= 50, `${id} has ${n} words`);
+  }
+});
+const appSrc = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8') + readFileSync(new URL('../js/tutorials.js', import.meta.url), 'utf8');
+const usedHelp = () => {
+  const ids = new Set();
+  for (const m of appSrc.matchAll(/data-help="([^"$]+)"/g)) ids.add(m[1]);
+  for (const m of appSrc.matchAll(/data-help="slider-\$\{([^}]+)\}"/g)) void m;
+  return ids;
+};
+test('every static data-help id has a catalogue entry', () => {
+  for (const id of usedHelp()) assert.ok(HELP[id], `missing help for ${id}`);
+});
+test('every catalogue entry is referenced somewhere', () => {
+  const flags = ['Blur', 'Eyes', 'Expression', 'Away', 'Cut', 'Exposure', 'Face', 'Duplicate'].map(f => `chip-${f.toLowerCase()}`);
+  for (const id of Object.keys(HELP)) {
+    let needles = [id];
+    if (id.startsWith('slider-hsl-')) needles = ['slider-hsl-${'];
+    else if (id.startsWith('slider-')) needles = [`'${id.slice(7)}'`, `"${id.slice(7)}"`, `data-help="${id}"`, `slider-\${`];
+    else if (flags.includes(id)) needles = ['chip-${'];
+    assert.ok(needles.some(n => appSrc.includes(n)), `unused help ${id}`);
+  }
+});
+
+// ---------- tutorials ----------
+test('there are 10 tutorials with unique ids and steps', () => {
+  assert.equal(TUTORIALS.length, 10);
+  assert.equal(new Set(TUTORIALS.map(t => t.id)).size, 10);
+  for (const t of TUTORIALS) assert.ok(t.steps.length >= 3);
+});
+test('tutorial step targets point at known help ids', () => {
+  for (const t of TUTORIALS) for (const s of t.steps) {
+    const id = s.target.match(/data-help="([^"]+)"/)?.[1];
+    assert.ok(id && HELP[id], `${t.id}: unknown target ${s.target}`);
+  }
+});
+test('steps with unmet requirements are skipped', () => {
+  const t = TUTORIALS.find(x => x.id === 'series');
+  const none = { screen: 'home', mode: 'photos', hasSeries: false, recent: false };
+  assert.equal(firstStep(t, none), 0);
+  assert.equal(stepIndex(t, 0, 1, none), -1);
+  const some = { ...none, hasSeries: true };
+  assert.equal(stepIndex(t, 0, 1, some), 1);
+  assert.equal(stepIndex(t, 1, -1, some), 0);
+  const first = TUTORIALS.find(x => x.id === 'first-edit');
+  assert.equal(stepIndex(first, 0, 1, none), 2);
+  assert.equal(meets('cull', { screen: 'editor', mode: 'cull' }), true);
+  assert.equal(meets('cull', { screen: 'editor', mode: 'photos' }), false);
+});
+test('tutorial progress persists', () => {
+  const store = new Map();
+  const storage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  assert.deepEqual(loadProgress(storage), { done: [], dismissed: false });
+  let p = markDone(loadProgress(storage), 'looks');
+  p = markDone(p, 'looks');
+  assert.deepEqual(p.done, ['looks']);
+  saveProgress(storage, { ...p, dismissed: true });
+  assert.ok(store.has(STORAGE_KEY));
+  assert.deepEqual(loadProgress(storage), { done: ['looks'], dismissed: true });
+  store.set(STORAGE_KEY, '{bad');
+  assert.deepEqual(loadProgress(storage), { done: [], dismissed: false });
+  store.set(STORAGE_KEY, JSON.stringify({ done: ['nope', 'crop'] }));
+  assert.deepEqual(loadProgress(storage).done, ['crop']);
+  assert.deepEqual(resetProgress(), { done: [], dismissed: false });
 });
 
 console.log(`\n${pass} tests passed`);

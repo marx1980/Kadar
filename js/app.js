@@ -566,6 +566,153 @@ function render() {
   updateTour();
 }
 
+// ---------- tutorials and help ----------
+
+let toastTimer = 0;
+function toast(message) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+const tourCtx = () => ({ screen: S.screen, mode: S.editorMode, hasSeries: S.series.length > 0, recent: Boolean(S.recentEdit) });
+const tourOverlay = () => {
+  let el = document.getElementById('tour');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tour';
+    el.addEventListener('click', e => {
+      const t = e.target.closest('[data-act]');
+      if (!t) return;
+      const a = t.dataset.act;
+      if (a === 'tourStart') startTutorial(t.dataset.id);
+      else if (a === 'tourNext') tourMove(1);
+      else if (a === 'tourBack') tourMove(-1);
+      else if (a === 'tourSkip') endTour(false);
+      else if (a === 'tourClose') { S.tour = null; render(); }
+    });
+    document.body.appendChild(el);
+  }
+  return el;
+};
+
+function updateTour() {
+  const el = tourOverlay();
+  const tour = S.tour;
+  if (!tour) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  if (tour.list) {
+    el.className = 'tour-list';
+    el.innerHTML = `<div class="tour-card" role="dialog" aria-label="Tutorials">
+      <h2>Tutorials</h2>
+      <p class="save-note">Short lessons on a sample photo. Hold any button for more help.</p>
+      ${TUTORIALS.map(t => `<button class="btn tour-item" data-act="tourStart" data-id="${t.id}">
+        <span>${esc(t.title)}</span><span aria-label="${S.progress.done.includes(t.id) ? 'Completed' : 'Not completed'}">${S.progress.done.includes(t.id) ? '✓' : ''}</span></button>`).join('')}
+      <button class="btn" data-act="tourClose">Close</button></div>`;
+    return;
+  }
+  const tutorial = TUTORIALS.find(t => t.id === tour.id);
+  const step = tutorial?.steps[tour.i];
+  if (!step) { S.tour = null; el.hidden = true; return; }
+  const last = stepIndex(tutorial, tour.i, 1, tourCtx()) < 0;
+  const count = tutorial.steps.filter(x => meets(x.requires, tourCtx())).length;
+  el.className = 'tour-step';
+  let target = null;
+  try { target = document.querySelector(step.target); } catch (e) { /* bad selector */ }
+  el.innerHTML = `<div class="tour-spot" ${target ? '' : 'hidden'}></div>
+    <div class="tour-card" role="dialog" aria-label="${esc(tutorial.title)}">
+      <strong>${esc(tutorial.title)}</strong>
+      <p>${esc(step.text)}</p>
+      <div class="tour-actions">
+        <button class="btn" data-act="tourSkip">Skip</button>
+        <button class="btn" data-act="tourBack" ${stepIndex(tutorial, tour.i, -1, tourCtx()) < 0 ? 'disabled' : ''}>Back</button>
+        <button class="btn primary" data-act="tourNext">${last ? 'Done' : 'Next'}</button>
+      </div><span class="save-note">${Math.min(tour.n + 1, count)} of ${count}</span></div>`;
+  if (target) {
+    target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const r = target.getBoundingClientRect();
+    const spot = el.querySelector('.tour-spot');
+    Object.assign(spot.style, { left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` });
+    const card = el.querySelector('.tour-card');
+    card.classList.toggle('top', r.top > window.innerHeight / 2);
+  }
+}
+
+function applyTourStep() {
+  const tutorial = TUTORIALS.find(t => t.id === S.tour?.id);
+  const step = tutorial?.steps[S.tour.i];
+  if (!step) return;
+  if (step.group) S.group = step.group;
+  if (step.advanced) S.advanced = true;
+  S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false;
+  if (step.screen === 'home' && S.screen !== 'home' && !S.busy) S.screen = S.items.length ? 'series' : 'home';
+}
+
+async function startTutorial(id) {
+  const tutorial = TUTORIALS.find(t => t.id === id);
+  if (!tutorial) return;
+  S.sheet = false;
+  S.progress = { ...S.progress, dismissed: true };
+  saveProgress(localStorage, S.progress);
+  if (tutorial.start === 'editor' && S.screen !== 'editor') await openSample();
+  if (tutorial.start === 'home' && S.screen !== 'home' && S.screen !== 'series') S.screen = 'home';
+  const i = firstStep(tutorial, tourCtx());
+  if (i < 0) { S.tour = null; render(); return; }
+  S.tour = { id, i, n: 0 };
+  applyTourStep();
+  render();
+}
+
+function tourMove(dir) {
+  const tutorial = TUTORIALS.find(t => t.id === S.tour?.id);
+  if (!tutorial) return;
+  const next = stepIndex(tutorial, S.tour.i, dir, tourCtx());
+  if (next < 0) { if (dir > 0) endTour(true); return; }
+  S.tour = { ...S.tour, i: next, n: Math.max(0, S.tour.n + dir) };
+  applyTourStep();
+  render();
+}
+
+function endTour(completed) {
+  if (completed && S.tour?.id) {
+    S.progress = markDone(S.progress, S.tour.id);
+    saveProgress(localStorage, S.progress);
+  }
+  S.tour = null;
+  render();
+}
+
+async function openSample() {
+  try {
+    const res = await fetch('assets/sample.jpg');
+    if (!res.ok) throw new Error('sample missing');
+    const blob = await res.blob();
+    await openPhotosForEditing([new File([blob], 'sample.jpg', { type: 'image/jpeg' })]);
+    if (S.editItems[0]) S.editItems[0].sample = true;
+  } catch (e) {
+    S.error = 'Could not load the sample photo.';
+    render();
+  }
+}
+
+initHelp(document.body, { enabled: () => S.ui.help });
+$app.addEventListener('toggle', e => {
+  const d = e.target;
+  if (!d.matches?.('details[data-group]')) return;
+  if (d.open) {
+    S.group = d.dataset.group;
+    $app.querySelectorAll('details[data-group][open]').forEach(o => { if (o !== d) o.open = false; });
+  } else if (S.group === d.dataset.group) S.group = '';
+}, true);
+
 // ---------- actions ----------
 
 function editorItems() {
@@ -1256,6 +1403,7 @@ async function saveEdited() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
     S.screen = S.editorMode === 'cull' ? 'review' : 'editor';
+    S.notice = 'Saved. Your original is unchanged.';
   } catch (e) {
     if (!e || e.name !== 'AbortError') setEditorError('Could not save the edited photo. Try a smaller image.');
   } finally {
@@ -1545,6 +1693,7 @@ $app.addEventListener('click', e => {
   if (!t) return;
   if (t.dataset.act === 'close' && e.target.closest('[data-stop]') && !e.target.closest('button[data-act=close]')) return;
   const a = t.dataset.act;
+  if (S.notice && a !== 'saveEdited') S.notice = '';
   if (S.screen === 'editor' && [
     'crop', 'look', 'rotate', 'flip', 'resetAll', 'resetControl', 'resetTonePoint', 'resetTransform',
     'clearHealing', 'clearLocalMask', 'clearGradient', 'localGradient', 'renameLook', 'deleteLook',
