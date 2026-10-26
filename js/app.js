@@ -1,8 +1,84 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
-import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from './editor.js';
+import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, warpPerspective } from './editor.js';
 import { loadRecentEdit, saveRecentEdit } from './recent.js';
 
 const $app = document.getElementById('app');
+const editHistory = new WeakMap();
+const BUILT_IN_LOOKS = {
+  natural: {},
+  warm: { temperature: 14, saturation: 108, contrast: 4 },
+  vivid: { saturation: 128, contrast: 8, sharpness: 0.3 },
+  mono: { saturation: 0, contrast: 12 },
+};
+const HSL_NAMES = ['Red', 'Orange', 'Yellow', 'Green', 'Aqua', 'Blue', 'Purple', 'Magenta'];
+const LOOK_ADJUSTMENT_KEYS = [
+  'exposure', 'contrast', 'highlights', 'shadows', 'temperature', 'tint', 'saturation', 'sharpness',
+  'tonePoints',
+  ...HSL_NAMES.flatMap(channel => [`hsl${channel}Hue`, `hsl${channel}Saturation`, `hsl${channel}Luminance`]),
+];
+function loadCustomLooks() {
+  try {
+    const looks = JSON.parse(localStorage.getItem('kadar-custom-looks') || '[]');
+    return Array.isArray(looks) ? looks.filter(look => look && /^custom-[\w-]+$/.test(look.id) &&
+      typeof look.name === 'string' && look.adjustments && typeof look.adjustments === 'object')
+      .map(look => ({
+        id: look.id,
+        name: look.name.trim().slice(0, 24) || 'Custom look',
+        adjustments: Object.fromEntries(LOOK_ADJUSTMENT_KEYS.filter(key => key === 'tonePoints'
+          ? Array.isArray(look.adjustments[key]) && look.adjustments[key].length === 5 &&
+            look.adjustments[key].every(Number.isFinite)
+          : Number.isFinite(Number(look.adjustments[key])))
+          .map(key => [key, key === 'tonePoints' ? look.adjustments[key].map(point => Math.max(0, Math.min(100, point))) : Number(look.adjustments[key])])),
+      })) : [];
+  } catch { return []; }
+}
+let customLooks = loadCustomLooks();
+const allLooks = () => [...Object.entries(BUILT_IN_LOOKS).map(([id, adjustments]) => ({ id, name: id, adjustments })), ...customLooks];
+function lookById(id) {
+  return allLooks().find(look => look.id === id);
+}
+const cloneEdits = edits => structuredClone(edits || {});
+function historyFor(it) {
+  let history = editHistory.get(it);
+  if (!history) {
+    history = { undo: [], redo: [] };
+    editHistory.set(it, history);
+  }
+  return history;
+}
+function recordUndo(it) {
+  const history = historyFor(it);
+  history.undo.push(cloneEdits(it.adjustments));
+  if (history.undo.length > 30) history.undo.shift();
+  history.redo.length = 0;
+}
+function effectiveAdjustments(edits = {}) {
+  const selected = lookById(edits.look);
+  const look = selected?.adjustments || {};
+  const amount = Math.max(0, Math.min(100, Number(edits.lookAmount ?? 100))) / 100;
+  const result = { ...edits };
+  for (const [key, value] of Object.entries(look)) {
+    if (key === 'tonePoints' && Array.isArray(value) && value.length === 5) {
+      const base = Array.isArray(edits.tonePoints) ? edits.tonePoints : [0, 25, 50, 75, 100];
+      result.tonePoints = value.map((point, index) => base[index] + (point - index * 25) * amount);
+      continue;
+    }
+    const base = key === 'saturation' ? Number(edits[key] ?? 100) : Number(edits[key] || 0);
+    result[key] = base + (value - (key === 'saturation' ? 100 : 0)) * amount;
+  }
+  return result;
+}
+function lookOffset(key, edits = {}) {
+  const look = lookById(edits.look)?.adjustments;
+  if (!look || !(key in look)) return 0;
+  const neutral = key === 'saturation' ? 100 : 0;
+  return (Number(look[key]) - neutral) * Math.max(0, Math.min(100, Number(edits.lookAmount ?? 100))) / 100;
+}
+function lookPointOffset(index, edits = {}) {
+  const points = lookById(edits.look)?.adjustments?.tonePoints;
+  return Array.isArray(points) ? (Number(points[index]) - index * 25) *
+    Math.max(0, Math.min(100, Number(edits.lookAmount ?? 100))) / 100 : 0;
+}
 const RING = '<svg class="ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path vector-effect="non-scaling-stroke" d="M52 4C81 3 97 21 96 50C95 80 77 97 48 96C19 95 3 77 4 48C5 23 23 7 58 8"/></svg>';
 const XMARK = '<svg class="x" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><line vector-effect="non-scaling-stroke" x1="14" y1="86" x2="86" y2="14"/></svg>';
 const ICON = {
@@ -36,6 +112,12 @@ const S = {
   focusBrushTarget: 'sharp',
   focusBrushSize: 20,
   focusPointer: null,
+  localBrush: false,
+  localGradientMode: false,
+  gradientStart: null,
+  gradientJustDrawn: false,
+  healMode: false,
+  sliderHistoryItem: null,
 };
 
 function loadSettings() {
@@ -160,16 +242,26 @@ function editorScreen() {
   const seriesFeatures = S.editorMode === 'cull';
   const sharpest = seriesFeatures ? sharpestFrameIndex(items) : -1;
   const faceMatches = seriesFeatures ? bestFaceSources(items, index) : [];
-  const faceSources = it.adjustments?.faceSources || [];
-  const fusion = it.adjustments?.fusion;
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
-  const crop = cropRect(it.w, it.h, edits.crop);
+  const shownEdits = effectiveAdjustments(edits);
+  const selectedLook = lookById(edits.look);
+  const tonePoints = [0, 25, 50, 75, 100].map((value, point) =>
+    Math.max(0, Math.min(100, Number(shownEdits.tonePoints?.[point] ?? value))));
+  const faceSources = edits.faceSources || [];
+  const fusion = edits.fusion;
+  const history = historyFor(it);
+  const dimensions = orientedDimensions(it);
+  const crop = cropRect(dimensions.width, dimensions.height, edits.crop, edits);
   const aspect = crop.width / crop.height;
   const controls = [
-    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(edits.exposure).toFixed(1)} EV`],
-    ['contrast', 'Contrast', -50, 50, 1, `${edits.contrast}%`],
-    ['saturation', 'Colour', 0, 200, 1, `${edits.saturation}%`],
-    ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(edits.sharpness).toFixed(1)}`],
+    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(shownEdits.exposure || 0).toFixed(1)} EV`],
+    ['contrast', 'Contrast', -50, 50, 1, `${Number(shownEdits.contrast || 0)}%`],
+    ['highlights', 'Highlights', -100, 100, 1, `${Number(shownEdits.highlights || 0)}%`],
+    ['shadows', 'Shadows', -100, 100, 1, `${Number(shownEdits.shadows || 0)}%`],
+    ['temperature', 'Temperature', -100, 100, 1, `${Number(shownEdits.temperature || 0)}`],
+    ['tint', 'Tint', -100, 100, 1, `${Number(shownEdits.tint || 0)}`],
+    ['saturation', 'Colour', 0, 200, 1, `${Number(shownEdits.saturation ?? 100)}%`],
+    ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(shownEdits.sharpness || 0).toFixed(1)}`],
   ];
   const focusPerson = edits.focusPerson;
   const focusMask = edits.focusMask;
@@ -184,8 +276,13 @@ function editorScreen() {
       <button data-act="compare" data-v="after" aria-pressed="${S.compare === 'after'}">After</button>
     </div>
   </div>
+  <div class="editor-history">
+    <button class="btn" data-act="undo" ${history.undo.length ? '' : 'disabled'}>Undo</button>
+    <button class="btn" data-act="redo" ${history.redo.length ? '' : 'disabled'}>Redo</button>
+    <button class="btn" data-act="resetAll" ${Object.keys(edits).length ? '' : 'disabled'}>Reset all</button>
+  </div>
   <div class="stage editor-stage">
-    <div class="editor-photo ${S.focusBrush && focusMask ? 'brushing' : ''}" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
+    <div class="editor-photo ${S.focusBrush && focusMask || S.localBrush || S.localGradientMode || S.healMode ? 'brushing' : ''}" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
@@ -195,6 +292,88 @@ function editorScreen() {
     <span class="num">${index + 1} / ${items.length}</span>
     <button class="btn" data-act="editorNext" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
   </div>` : ''}
+  <details class="edit-group looks-group" open>
+    <summary>Looks</summary>
+    <div class="look-list">${allLooks().map(look =>
+      `<button class="btn" data-act="look" data-v="${esc(look.id)}" aria-pressed="${(edits.look || 'natural') === look.id}">${esc(look.name[0].toUpperCase() + look.name.slice(1))}</button>`).join('')}</div>
+    ${selectedLook && selectedLook.id.startsWith('custom-') ? `
+      <div class="manage-look"><input id="renameLook" type="text" maxlength="24" value="${esc(selectedLook.name)}" aria-label="Rename selected look">
+        <button class="btn" data-act="renameLook">Rename</button>
+        <button class="btn" data-act="deleteLook">Delete</button></div>` : ''}
+    <div class="save-look"><input id="lookName" type="text" maxlength="24" placeholder="Name this look" aria-label="Name this look">
+      <button class="btn" data-act="saveLook">Save current look</button></div>
+    <label class="adjust"><span>Look strength<output data-value="lookAmount">${Number(edits.lookAmount ?? 100)}%</output><button class="reset-control" data-act="resetControl" data-k="lookAmount">Reset</button></span>
+      <input type="range" data-adjust="lookAmount" min="0" max="100" step="1" value="${edits.lookAmount ?? 100}"></label>
+  </details>
+  <details class="edit-group" open>
+    <summary>Light</summary>
+    ${controls.slice(0, 4).map(([key, label, min, max, step, value]) => `
+      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? 0}"></label>`).join('')}
+    <details class="curve-editor">
+      <summary>Tone curve · edit points</summary>
+      <svg class="tone-curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve preview">
+        <path d="M0 0V100H100" class="tone-curve-grid"></path>
+        <polyline points="${tonePoints.map((value, point) => `${point * 25},${100 - value}`).join(' ')}"></polyline>
+      </svg>
+      ${['Shadows', 'Darks', 'Midtones', 'Lights', 'Highlights'].map((label, index) => {
+        const value = tonePoints[index];
+        return `<label class="adjust"><span>${label}<output data-value="tonePoint${index}">${value}%</output><button class="reset-control" data-act="resetTonePoint" data-i="${index}">Reset</button></span>
+          <input type="range" data-tone-point="${index}" min="0" max="100" step="1" value="${value}"></label>`;
+      }).join('')}
+    </details>
+  </details>
+  <details class="edit-group">
+    <summary>Color</summary>
+    ${controls.slice(4, 7).map(([key, label, min, max, step, value]) => `
+      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? (key === 'saturation' ? 100 : 0)}"></label>`).join('')}
+    <details class="hsl-group">
+      <summary>Color mix · HSL</summary>
+      ${HSL_NAMES.map(name => `<details class="hsl-channel"><summary>${name}</summary>
+        ${[['Hue', -180, 180, '°'], ['Saturation', -100, 100, '%'], ['Luminance', -100, 100, '%']].map(([axis, min, max, unit]) => {
+          const key = `hsl${name}${axis}`;
+          const value = Number(shownEdits[key] || 0);
+          return `<label class="adjust"><span>${axis}<output data-value="${key}">${value}${unit}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+            <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="1" value="${value}"></label>`;
+        }).join('')}
+      </details>`).join('')}
+    </details>
+  </details>
+  <details class="edit-group">
+    <summary>Detail and retouch</summary>
+    ${controls.slice(7).map(([key, label, min, max, step, value]) => `
+      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+        <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key] ?? 0}"></label>`).join('')}
+    <div class="focus-actions">
+      <button class="btn" data-act="localBrush" aria-pressed="${S.localBrush}">${S.localBrush ? 'Finish local brush' : 'Brush local exposure'}</button>
+      <button class="btn" data-act="localGradient" aria-pressed="${S.localGradientMode}">${S.localGradientMode ? 'Finish gradient' : 'Add gradient'}</button>
+      <button class="btn" data-act="healMode" aria-pressed="${S.healMode}">${S.healMode ? 'Finish healing' : 'Heal small spot'}</button>
+      ${edits.localMask ? '<button class="btn" data-act="clearLocalMask">Clear local brush</button>' : ''}
+      ${edits.heals?.length ? '<button class="btn" data-act="clearHealing">Clear healing</button>' : ''}
+    </div>
+    ${S.localBrush || S.localGradientMode ? `
+      <p class="depth-note">${S.localGradientMode ? 'Drag to apply local adjustments across a soft gradient.' : 'Paint on the photo to apply local adjustments.'}</p>
+      <label class="adjust"><span>Brush exposure<output data-value="localExposure">${Number(edits.localExposure || 0).toFixed(1)} EV</output><button class="reset-control" data-act="resetControl" data-k="localExposure">Reset</button></span>
+        <input type="range" data-adjust="localExposure" min="-2" max="2" step="0.1" value="${edits.localExposure || 0}"></label>
+      <label class="adjust"><span>Brush saturation<output data-value="localSaturation">${Number(edits.localSaturation || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localSaturation">Reset</button></span>
+        <input type="range" data-adjust="localSaturation" min="-100" max="100" step="1" value="${edits.localSaturation || 0}"></label>
+      <label class="adjust"><span>Brush contrast<output data-value="localContrast">${Number(edits.localContrast || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localContrast">Reset</button></span>
+        <input type="range" data-adjust="localContrast" min="-100" max="100" step="1" value="${edits.localContrast || 0}"></label>
+      <label class="adjust"><span>Brush temperature<output data-value="localTemperature">${Number(edits.localTemperature || 0)}</output><button class="reset-control" data-act="resetControl" data-k="localTemperature">Reset</button></span>
+        <input type="range" data-adjust="localTemperature" min="-100" max="100" step="1" value="${edits.localTemperature || 0}"></label>
+      <label class="adjust"><span>Brush tint<output data-value="localTint">${Number(edits.localTint || 0)}</output><button class="reset-control" data-act="resetControl" data-k="localTint">Reset</button></span>
+        <input type="range" data-adjust="localTint" min="-100" max="100" step="1" value="${edits.localTint || 0}"></label>
+      <label class="adjust"><span>Brush size<output data-value="localBrushSize">${S.focusBrushSize} px</output></span>
+        <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}"></label>` : ''}
+    ${S.localGradientMode ? '<p class="depth-note">Drag across the photo to place a soft gradient. Local sliders above tune its effect.</p>' : ''}
+    ${S.localGradientMode ? `<label class="adjust"><span>Gradient softness<output data-value="localGradientFeather">${Number(edits.localGradientFeather ?? 50)}%</output></span>
+      <input type="range" data-adjust="localGradientFeather" min="5" max="100" step="1" value="${edits.localGradientFeather ?? 50}"></label>` : ''}
+    ${edits.localGradient ? '<button class="btn" data-act="clearGradient">Clear gradient</button>' : ''}
+    ${S.healMode ? '<p class="depth-note">Tap a small distraction to blend it with nearby colors. This works best on smooth areas; use Undo if it looks wrong.</p>' : ''}
+  </details>
+  <details class="edit-group">
+    <summary>Focus</summary>
   <div class="focus-tools">
     <span>${S.focusBrush ? 'Paint the mask · ' : 'Tap photo to focus · '}${focusMode === 'depth'
       ? edits.focusDepth == null ? 'No focus plane selected' : 'Depth plane selected'
@@ -215,12 +394,12 @@ function editorScreen() {
       ${S.editorFocusing ? `<span role="status">${focusMode === 'depth' ? 'Estimating depth…' : 'Finding focus…'}</span>` : ''}
     </div>
     ${focusMode === 'depth' ? '<p class="depth-note">Depth estimation runs on this device. First use downloads the model; your photo is not uploaded.</p>' : ''}
-    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output></span>
+    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output><button class="reset-control" data-act="resetControl" data-k="focusBlur">Reset</button></span>
       <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusMode === 'depth'
         ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
         : focusPerson == null ? 'disabled' : ''}>
     </label>
-    <label class="adjust"><span>${focusMode === 'depth' ? 'Depth falloff' : 'Edge softness'}<output data-value="focusFeather">${Number(focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0)}${focusMode === 'depth' ? '%' : ' px'}</output></span>
+    <label class="adjust"><span>${focusMode === 'depth' ? 'Depth falloff' : 'Edge softness'}<output data-value="focusFeather">${Number(focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0)}${focusMode === 'depth' ? '%' : ' px'}</output><button class="reset-control" data-act="resetControl" data-k="${focusMode === 'depth' ? 'focusDepthFalloff' : 'focusFeather'}">Reset</button></span>
       <input type="range" data-focus-feather min="${focusMode === 'depth' ? 2 : 0}" max="${focusMode === 'depth' ? 40 : 24}" step="${focusMode === 'depth' ? 2 : 1}" value="${focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0}" ${focusMode === 'depth'
         ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
         : focusPerson == null ? 'disabled' : ''}>
@@ -235,14 +414,30 @@ function editorScreen() {
       </label>
     </div>` : ''}
   </div>
-  <div class="crop-set"><span>Crop</span><div class="seg" role="group" aria-label="Crop aspect ratio">
-  ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2']].map(([value, label]) =>
+  </details>
+  <details class="edit-group">
+    <summary>Crop and rotate</summary>
+  <div class="crop-set"><span>Crop ratio</span><div class="seg" role="group" aria-label="Crop aspect ratio">
+  ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2'], ['free', 'Free']].map(([value, label]) =>
   `<button data-act="crop" data-v="${value}" aria-pressed="${(edits.crop || 'original') === value}">${label}</button>`).join('')}
   </div></div>
-  ${controls.map(([key, label, min, max, step, value]) => `
-    <label class="adjust"><span>${label}<output data-value="${key}">${value}</output></span>
-      <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key]}">
-    </label>`).join('')}
+  <div class="focus-actions">
+    <button class="btn" data-act="rotate">Rotate 90°</button>
+    <button class="btn" data-act="flip" aria-pressed="${Boolean(edits.flip)}">Flip horizontal</button>
+  </div>
+  <label class="adjust"><span>Straighten<output data-value="straighten">${Number(edits.straighten || 0).toFixed(1)}°</output><button class="reset-control" data-act="resetTransform" data-k="straighten">Reset</button></span>
+    <input type="range" data-transform="straighten" min="-15" max="15" step="0.1" value="${edits.straighten || 0}"></label>
+  <label class="adjust"><span>Vertical perspective<output data-value="perspectiveV">${Number(edits.perspectiveV || 0)}%</output><button class="reset-control" data-act="resetTransform" data-k="perspectiveV">Reset</button></span>
+    <input type="range" data-transform="perspectiveV" min="-30" max="30" step="1" value="${edits.perspectiveV || 0}"></label>
+  <label class="adjust"><span>Horizontal perspective<output data-value="perspectiveH">${Number(edits.perspectiveH || 0)}%</output><button class="reset-control" data-act="resetTransform" data-k="perspectiveH">Reset</button></span>
+    <input type="range" data-transform="perspectiveH" min="-30" max="30" step="1" value="${edits.perspectiveH || 0}"></label>
+  <label class="adjust"><span>Crop size<output data-value="cropScale">${Number(edits.scale ?? 100)}%</output><button class="reset-control" data-act="resetControl" data-k="scale">Reset</button></span>
+    <input type="range" data-crop="scale" min="20" max="100" step="1" value="${edits.scale ?? 100}"></label>
+  <label class="adjust"><span>Horizontal position<output data-value="cropX">${Number(edits.x ?? 50)}%</output><button class="reset-control" data-act="resetControl" data-k="x">Reset</button></span>
+    <input type="range" data-crop="x" min="0" max="100" step="1" value="${edits.x ?? 50}"></label>
+  <label class="adjust"><span>Vertical position<output data-value="cropY">${Number(edits.y ?? 50)}%</output><button class="reset-control" data-act="resetControl" data-k="y">Reset</button></span>
+    <input type="range" data-crop="y" min="0" max="100" step="1" value="${edits.y ?? 50}"></label>
+  </details>
   <p class="err editor-error" role="alert" ${S.editorError ? '' : 'hidden'}>${esc(S.editorError)}</p>
   <div class="editor-actions">
     ${seriesFeatures ? `
@@ -319,6 +514,23 @@ function editorItem() {
   return editorItems()[editorIndex()];
 }
 
+function orientedDimensions(it) {
+  const angle = ((Number(it.adjustments?.rotation) || 0) + (Number(it.adjustments?.straighten) || 0)) * Math.PI / 180;
+  const cosine = Math.abs(Math.cos(angle)), sine = Math.abs(Math.sin(angle));
+  return {
+    width: Math.ceil(it.w * cosine + it.h * sine - 1e-7),
+    height: Math.ceil(it.w * sine + it.h * cosine - 1e-7),
+  };
+}
+
+function clearFocusEdits(edits) {
+  delete edits.focusMask;
+  delete edits.focusPerson;
+  delete edits.focusDepthMap;
+  delete edits.focusDepth;
+  edits.depthOverlay = false;
+}
+
 function setEditorError(message) {
   S.editorError = message;
   const error = document.querySelector('.editor-error');
@@ -371,6 +583,9 @@ async function openPhotosForEditing(files) {
   S.editorMode = 'photos';
   S.editIndex = 0;
   S.focusBrush = false;
+  S.localBrush = false;
+  S.localGradientMode = false;
+  S.healMode = false;
   S.focusPointer = null;
   S.screen = 'editor';
   S.compare = 'after';
@@ -418,6 +633,9 @@ async function resumeRecentEdit() {
     S.editIndex = Math.max(0, Math.min(session.index || 0, S.editItems.length - 1));
     S.editorMode = 'photos';
     S.focusBrush = false;
+    S.localBrush = false;
+    S.localGradientMode = false;
+    S.healMode = false;
     S.focusPointer = null;
     S.error = '';
     S.editorError = '';
@@ -628,7 +846,40 @@ async function createEditorBitmap(it, maxSide) {
     resizeHeight: Math.max(1, Math.round(height * scale)),
     resizeQuality: 'high',
   } : undefined;
-  return createImageBitmap(source, options);
+  const bitmap = await createImageBitmap(source, options);
+  const edits = it.adjustments || {};
+  const rotation = (((Number(edits.rotation) || 0) + (Number(edits.straighten) || 0)) % 360 + 360) % 360;
+  const radians = rotation * Math.PI / 180;
+  const canvasWidth = Math.max(1, Math.ceil(Math.abs(bitmap.width * Math.cos(radians)) + Math.abs(bitmap.height * Math.sin(radians)) - 1e-7));
+  const canvasHeight = Math.max(1, Math.ceil(Math.abs(bitmap.width * Math.sin(radians)) + Math.abs(bitmap.height * Math.cos(radians)) - 1e-7));
+  const perspective = Number(edits.perspectiveV) || Number(edits.perspectiveH);
+  if (!rotation && !edits.flip && !perspective) return bitmap;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close();
+    throw new Error('Canvas unavailable');
+  }
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(rotation * Math.PI / 180);
+  ctx.scale(it.adjustments?.flip ? -1 : 1, 1);
+  ctx.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
+  bitmap.close();
+  if (perspective) {
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    warpPerspective(image.data, canvas.width, canvas.height, Number(edits.perspectiveV) || 0, Number(edits.perspectiveH) || 0);
+    ctx.putImageData(image, 0, 0);
+  }
+  return createImageBitmap(canvas);
+}
+
+function applyHealing(ctx, spots = []) {
+  if (!spots.length) return;
+  const image = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
+  for (const spot of spots) healSpotPixels(image.data, ctx.canvas.width, ctx.canvas.height, spot);
+  ctx.putImageData(image, 0, 0);
 }
 
 async function renderEditorPreview() {
@@ -641,21 +892,28 @@ async function renderEditorPreview() {
     if (token !== S.previewToken || S.screen !== 'editor') { bitmap.close(); return; }
     let crop, imageWidth, imageHeight, ctx;
     try {
-      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop, it.adjustments);
       imageWidth = bitmap.width; imageHeight = bitmap.height;
       canvas.width = Math.max(1, Math.round(crop.width));
       canvas.height = Math.max(1, Math.round(crop.height));
       ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) throw new Error('Canvas unavailable');
       ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+      const photo = canvas.closest('.editor-photo');
+      if (photo) {
+        const aspect = crop.width / crop.height;
+        photo.style.aspectRatio = `${crop.width}/${crop.height}`;
+        photo.style.width = `min(100%,calc(52dvh * ${aspect}))`;
+      }
     } finally {
       bitmap.close();
     }
+    applyHealing(ctx, it.adjustments?.heals || []);
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
     if (token !== S.previewToken || S.screen !== 'editor') return;
     applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight, false);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
+    adjustPixels(pixels.data, canvas.width, canvas.height, effectiveAdjustments(it.adjustments));
     ctx.putImageData(pixels, 0, 0);
   } catch (e) {
     if (token === S.previewToken) setEditorError('Could not preview this photo. Try a smaller image.');
@@ -811,14 +1069,16 @@ async function selectFocus(event, photo) {
   const rect = photo.getBoundingClientRect();
   const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
   const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  recordUndo(it);
+  const undo = $app.querySelector('[data-act="undo"]');
+  if (undo) undo.disabled = false;
   S.editorFocusing = true;
   S.editorError = '';
   render();
   try {
     it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
-    const sourceWidth = it.adjustments?.fusion?.width || it.sourceW || it.w;
-    const sourceHeight = it.adjustments?.fusion?.height || it.sourceH || it.h;
-    const crop = cropRect(sourceWidth, sourceHeight, it.adjustments?.crop);
+    const { width: sourceWidth, height: sourceHeight } = orientedDimensions(it);
+    const crop = cropRect(sourceWidth, sourceHeight, it.adjustments?.crop, it.adjustments);
     const sourceX = (crop.x + x * crop.width) / sourceWidth;
     const sourceY = (crop.y + y * crop.height) / sourceHeight;
     if (it.adjustments.focusMode === 'depth') {
@@ -850,17 +1110,43 @@ function paintFocusMask(event, photo) {
   if (!mask || !rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right ||
       event.clientY < rect.top || event.clientY > rect.bottom) return;
 
-  const crop = cropRect(it.adjustments?.fusion?.width || it.sourceW || it.w,
-    it.adjustments?.fusion?.height || it.sourceH || it.h, it.adjustments?.crop);
+  const { width, height } = orientedDimensions(it);
+  const crop = cropRect(width, height, it.adjustments?.crop, it.adjustments);
   const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
   const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-  const sourceX = (crop.x + x * crop.width) / (it.adjustments?.fusion?.width || it.sourceW || it.w);
-  const sourceY = (crop.y + y * crop.height) / (it.adjustments?.fusion?.height || it.sourceH || it.h);
+  const sourceX = (crop.x + x * crop.width) / width;
+  const sourceY = (crop.y + y * crop.height) / height;
   const keepSharp = S.focusBrushTarget === 'sharp';
   const maskValue = keepSharp === Boolean(it.adjustments.focusPerson) ? 1 : 0;
   paintMask(mask, sourceX, sourceY, S.focusBrushSize, maskValue);
   if (S.editorMode === 'photos') scheduleRecentEditSave();
   requestAnimationFrame(renderEditorPreview);
+}
+
+function paintLocalMask(event, photo) {
+  const it = editorItem();
+  const rect = photo.getBoundingClientRect();
+  if (!rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom) return;
+  it.adjustments.localMask ||= { width: 256, height: 256, data: new Float32Array(256 * 256) };
+  const x = (event.clientX - rect.left) / rect.width;
+  const y = (event.clientY - rect.top) / rect.height;
+  paintMask(it.adjustments.localMask, x, y, S.focusBrushSize * 256 / rect.width, 1);
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
+  requestAnimationFrame(renderEditorPreview);
+}
+
+function healAt(event, photo) {
+  const it = editorItem();
+  const rect = photo.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  recordUndo(it);
+  it.adjustments.heals ||= [];
+  it.adjustments.heals.push({ x, y, radius: S.focusBrushSize / rect.width });
+  S.healMode = false;
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
+  render();
 }
 
 async function saveEdited() {
@@ -872,7 +1158,7 @@ async function saveEdited() {
     const bitmap = await createEditorBitmap(it, 4096);
     let crop, imageWidth, imageHeight, canvas, ctx;
     try {
-      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop);
+      crop = cropRect(bitmap.width, bitmap.height, it.adjustments?.crop, it.adjustments);
       imageWidth = bitmap.width; imageHeight = bitmap.height;
       canvas = document.createElement('canvas');
       canvas.width = Math.max(1, Math.round(crop.width));
@@ -884,10 +1170,11 @@ async function saveEdited() {
       bitmap.close();
     }
     await renderFaceRepairs(ctx, it, crop, imageWidth, imageHeight, canvas.width, canvas.height);
+    applyHealing(ctx, it.adjustments?.heals || []);
     if (it.adjustments?.focusPerson != null && !it.adjustments.focusMask) await getFocusMask(it);
     applyFocusEffect(ctx, it.adjustments, crop, imageWidth, imageHeight);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    adjustPixels(pixels.data, canvas.width, canvas.height, it.adjustments);
+    adjustPixels(pixels.data, canvas.width, canvas.height, effectiveAdjustments(it.adjustments));
     ctx.putImageData(pixels, 0, 0);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
     if (!blob) throw new Error('Image export failed');
@@ -946,6 +1233,9 @@ function stepEditor(df) {
   if (n < 0 || n >= S.editItems.length) return;
   S.editIndex = n;
   S.focusBrush = false;
+  S.localBrush = false;
+  S.localGradientMode = false;
+  S.healMode = false;
   S.focusPointer = null;
   S.editorError = '';
   render();
@@ -965,6 +1255,7 @@ function bindSwipe() {
 }
 
 $app.addEventListener('change', e => {
+  if (e.target.closest('[data-adjust], [data-crop], [data-tone-point], [data-transform]')) S.sliderHistoryItem = null;
   if (e.target.id === 'pick' && e.target.files.length) {
     const files = [...e.target.files];
     e.target.value = '';
@@ -988,6 +1279,11 @@ $app.addEventListener('input', e => {
   const focusBlur = e.target.closest('[data-focus-blur]');
   if (focusBlur && S.screen === 'editor') {
     const it = editorItem();
+    if (S.sliderHistoryItem !== it) {
+      recordUndo(it); S.sliderHistoryItem = it;
+      const undo = $app.querySelector('[data-act="undo"]');
+      if (undo) undo.disabled = false;
+    }
     it.adjustments.focusBlur = Number(focusBlur.value);
     const output = $app.querySelector('[data-value="focusBlur"]');
     if (output) output.textContent = `${focusBlur.value} px`;
@@ -998,6 +1294,11 @@ $app.addEventListener('input', e => {
   const focusFeather = e.target.closest('[data-focus-feather]');
   if (focusFeather && S.screen === 'editor') {
     const it = editorItem();
+    if (S.sliderHistoryItem !== it) {
+      recordUndo(it); S.sliderHistoryItem = it;
+      const undo = $app.querySelector('[data-act="undo"]');
+      if (undo) undo.disabled = false;
+    }
     const depthMode = it.adjustments?.focusMode === 'depth';
     it.adjustments[depthMode ? 'focusDepthFalloff' : 'focusFeather'] = Number(focusFeather.value);
     const output = $app.querySelector('[data-value="focusFeather"]');
@@ -1009,44 +1310,167 @@ $app.addEventListener('input', e => {
   const input = e.target.closest('[data-adjust]');
   if (!input || S.screen !== 'editor') return;
   const it = editorItem();
+  if (S.sliderHistoryItem !== it) {
+    recordUndo(it);
+    S.sliderHistoryItem = it;
+    const undo = $app.querySelector('[data-act="undo"]');
+    if (undo) undo.disabled = false;
+  }
   it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
-  it.adjustments[input.dataset.adjust] = Number(input.value);
+  it.adjustments[input.dataset.adjust] = input.dataset.adjust === 'localGradientFeather'
+    ? Number(input.value)
+    : Number(input.value) - lookOffset(input.dataset.adjust, it.adjustments);
   const output = $app.querySelector(`[data-value="${input.dataset.adjust}"]`);
   if (output) {
     const { exposure, contrast, saturation, sharpness } = it.adjustments;
-    output.textContent = input.dataset.adjust === 'exposure' ? `${exposure.toFixed(1)} EV`
-      : input.dataset.adjust === 'sharpness' ? sharpness.toFixed(1)
-      : `${input.value}%`;
+    output.textContent = input.dataset.adjust === 'exposure' || input.dataset.adjust === 'localExposure'
+      ? `${Number(input.value).toFixed(1)} EV`
+      : ['sharpness', 'temperature', 'tint', 'localTemperature', 'localTint'].includes(input.dataset.adjust) ? input.dataset.adjust === 'sharpness'
+        ? sharpness.toFixed(1) : input.value
+        : input.dataset.adjust.startsWith('hsl') && input.dataset.adjust.endsWith('Hue') ? `${input.value}°`
+        : `${input.value}%`;
   }
+  if (input.dataset.adjust === 'lookAmount') {
+    const lookOutput = $app.querySelector('[data-value="lookAmount"]');
+    if (lookOutput) lookOutput.textContent = `${input.value}%`;
+  }
+  if (input.dataset.adjust === 'localExposure') {
+    const localOutput = $app.querySelector('[data-value="localExposure"]');
+    if (localOutput) localOutput.textContent = `${Number(input.value).toFixed(1)} EV`;
+  }
+  if (input.dataset.adjust === 'localGradientFeather') {
+    const featherOutput = $app.querySelector('[data-value="localGradientFeather"]');
+    if (featherOutput) featherOutput.textContent = `${input.value}%`;
+  }
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
+  requestAnimationFrame(renderEditorPreview);
+});
+
+$app.addEventListener('input', e => {
+  const input = e.target.closest('[data-tone-point]');
+  if (!input || S.screen !== 'editor') return;
+  const it = editorItem();
+  if (S.sliderHistoryItem !== it) {
+    recordUndo(it);
+    S.sliderHistoryItem = it;
+    const undo = $app.querySelector('[data-act="undo"]');
+    if (undo) undo.disabled = false;
+  }
+  it.adjustments.tonePoints ||= [0, 25, 50, 75, 100];
+  const index = Number(input.dataset.tonePoint);
+  it.adjustments.tonePoints[index] = Number(input.value) - lookPointOffset(index, it.adjustments);
+  const output = $app.querySelector(`[data-value="tonePoint${input.dataset.tonePoint}"]`);
+  if (output) output.textContent = `${input.value}%`;
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
+  requestAnimationFrame(renderEditorPreview);
+});
+
+$app.addEventListener('input', e => {
+  const input = e.target.closest('[data-crop]');
+  if (!input || S.screen !== 'editor') return;
+  const it = editorItem();
+  if (S.sliderHistoryItem !== it) {
+    recordUndo(it);
+    S.sliderHistoryItem = it;
+    const undo = $app.querySelector('[data-act="undo"]');
+    if (undo) undo.disabled = false;
+  }
+  it.adjustments ||= { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+  it.adjustments[input.dataset.crop] = Number(input.value);
+  const outputKey = input.dataset.crop === 'x' ? 'cropX' : input.dataset.crop === 'y' ? 'cropY' : 'cropScale';
+  const output = $app.querySelector(`[data-value="${outputKey}"]`);
+  if (output) output.textContent = `${input.value}%`;
+  if (S.editorMode === 'photos') scheduleRecentEditSave();
+  requestAnimationFrame(renderEditorPreview);
+});
+
+$app.addEventListener('input', e => {
+  const input = e.target.closest('[data-transform]');
+  if (!input || S.screen !== 'editor') return;
+  const it = editorItem();
+  if (S.sliderHistoryItem !== it) {
+    recordUndo(it);
+    S.sliderHistoryItem = it;
+    const undo = $app.querySelector('[data-act="undo"]');
+    if (undo) undo.disabled = false;
+    clearFocusEdits(it.adjustments);
+    delete it.adjustments.localMask;
+    delete it.adjustments.localGradient;
+    it.adjustments.heals = [];
+  }
+  it.adjustments[input.dataset.transform] = Number(input.value);
+  const output = $app.querySelector(`[data-value="${input.dataset.transform}"]`);
+  if (output) output.textContent = input.dataset.transform === 'straighten' ? `${Number(input.value).toFixed(1)}°` : `${input.value}%`;
   if (S.editorMode === 'photos') scheduleRecentEditSave();
   requestAnimationFrame(renderEditorPreview);
 });
 
 $app.addEventListener('pointerdown', e => {
   const photo = e.target.closest('.editor-photo');
-  if (!photo || S.screen !== 'editor' || !S.focusBrush || !editorItem().adjustments?.focusMask) return;
+  if (!photo || S.screen !== 'editor' ||
+      !(S.focusBrush && editorItem().adjustments?.focusMask || S.localBrush || S.localGradientMode)) return;
   e.preventDefault();
+  recordUndo(editorItem());
+  const undo = $app.querySelector('[data-act="undo"]');
+  if (undo) undo.disabled = false;
   S.focusPointer = e.pointerId;
   photo.setPointerCapture(e.pointerId);
-  paintFocusMask(e, photo);
+  if (S.localGradientMode) {
+    const rect = photo.getBoundingClientRect();
+    S.gradientStart = {
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    };
+  } else if (S.localBrush) paintLocalMask(e, photo);
+  else paintFocusMask(e, photo);
 });
 
 $app.addEventListener('pointermove', e => {
   if (S.focusPointer !== e.pointerId) return;
   const photo = e.target.closest('.editor-photo') || $app.querySelector('.editor-photo');
-  if (photo) paintFocusMask(e, photo);
+  if (photo) {
+    if (S.localGradientMode) return;
+    if (S.localBrush) paintLocalMask(e, photo);
+    else paintFocusMask(e, photo);
+  }
 });
 
 $app.addEventListener('pointerup', e => {
-  if (S.focusPointer === e.pointerId) S.focusPointer = null;
+  if (S.focusPointer !== e.pointerId) return;
+  if (S.localGradientMode && S.gradientStart) {
+    const photo = e.target.closest('.editor-photo') || $app.querySelector('.editor-photo');
+    const rect = photo?.getBoundingClientRect();
+    if (rect?.width && rect?.height) {
+      const it = editorItem();
+      it.adjustments.localGradient = {
+        ...S.gradientStart,
+        endX: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+        endY: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+      };
+      if (S.editorMode === 'photos') scheduleRecentEditSave();
+      S.gradientJustDrawn = true;
+      setTimeout(() => { S.gradientJustDrawn = false; }, 0);
+      render();
+    }
+  }
+  S.gradientStart = null;
+  S.focusPointer = null;
 });
 $app.addEventListener('pointercancel', e => {
-  if (S.focusPointer === e.pointerId) S.focusPointer = null;
+  if (S.focusPointer === e.pointerId) {
+    S.focusPointer = null;
+    S.gradientStart = null;
+  }
 });
 
 $app.addEventListener('click', e => {
   const photo = e.target.closest('.editor-photo');
   if (photo && S.screen === 'editor') {
+    if (S.healMode) { healAt(e, photo); return; }
+    if (S.localBrush || S.localGradientMode || S.gradientJustDrawn) {
+      S.gradientJustDrawn = false;
+      return;
+    }
     if (S.focusBrush && editorItem().adjustments?.focusMask) return;
     selectFocus(e, photo);
     return;
@@ -1055,6 +1479,12 @@ $app.addEventListener('click', e => {
   if (!t) return;
   if (t.dataset.act === 'close' && e.target.closest('[data-stop]') && !e.target.closest('button[data-act=close]')) return;
   const a = t.dataset.act;
+  if (S.screen === 'editor' && [
+    'crop', 'look', 'rotate', 'flip', 'resetAll', 'resetControl', 'resetTonePoint', 'resetTransform',
+    'clearHealing', 'clearLocalMask', 'clearGradient', 'localGradient', 'renameLook', 'deleteLook',
+    'focusOverlay', 'focusMode', 'depthOverlay', 'focusBrush', 'clearFocus',
+    'bestFaces', 'clearFaces', 'fuseSeries', 'undoFusion',
+  ].includes(a)) recordUndo(editorItem());
   if (a === 'settings') { S.sheet = true; render(); }
   else if (a === 'close') { S.sheet = false; render(); }
   else if (a === 'resumeRecent') resumeRecentEdit();
@@ -1078,10 +1508,178 @@ $app.addEventListener('click', e => {
     S.focusPointer = null;
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.focusBrush = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
+  else if (a === 'editorBack') { S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
   else if (a === 'editorPrev' && S.editorMode === 'photos') stepEditor(-1);
   else if (a === 'editorNext' && S.editorMode === 'photos') stepEditor(1);
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
+  else if (a === 'undo' || a === 'redo') {
+    const it = editorItem();
+    const history = historyFor(it);
+    const from = a === 'undo' ? history.undo : history.redo;
+    const to = a === 'undo' ? history.redo : history.undo;
+    if (from.length) {
+      to.push(cloneEdits(it.adjustments));
+      it.adjustments = from.pop();
+      S.focusBrush = false;
+      S.localBrush = false;
+      S.localGradientMode = false;
+      S.healMode = false;
+      if (S.editorMode === 'photos') scheduleRecentEditSave();
+      render();
+    }
+  }
+  else if (a === 'resetAll') {
+    const it = editorItem();
+    it.adjustments = { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
+    S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false;
+    S.focusPointer = null;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'resetControl') {
+    const edits = editorItem().adjustments;
+    const key = t.dataset.k;
+    const defaults = {
+      exposure: 0, contrast: 0, highlights: 0, shadows: 0, temperature: 0, tint: 0,
+      saturation: 100, sharpness: 0, lookAmount: 100, scale: 100, x: 50, y: 50,
+      localExposure: 0, localSaturation: 0, localContrast: 0, localTemperature: 0, localTint: 0, localGradientFeather: 50,
+      focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
+    };
+    if (key in defaults) edits[key] = defaults[key] - lookOffset(key, edits);
+    else if (/^hsl(Red|Orange|Yellow|Green|Aqua|Blue|Purple|Magenta)(Hue|Saturation|Luminance)$/.test(key)) edits[key] = -lookOffset(key, edits);
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'resetTonePoint') {
+    const index = Number(t.dataset.i);
+    editorItem().adjustments.tonePoints ||= [0, 25, 50, 75, 100];
+    editorItem().adjustments.tonePoints[index] = index * 25 - lookPointOffset(index, editorItem().adjustments);
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'resetTransform') {
+    const it = editorItem();
+    it.adjustments[t.dataset.k] = 0;
+    clearFocusEdits(it.adjustments);
+    delete it.adjustments.localMask;
+    delete it.adjustments.localGradient;
+    it.adjustments.heals = [];
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'look') {
+    editorItem().adjustments.look = t.dataset.v;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'renameLook') {
+    const it = editorItem();
+    const look = customLooks.find(candidate => candidate.id === it.adjustments.look);
+    const name = ($app.querySelector('#renameLook')?.value || '').trim().slice(0, 24);
+    if (!look || !name) { setEditorError('Enter a name for this custom look.'); return; }
+    const updated = customLooks.map(candidate => candidate.id === look.id ? { ...candidate, name } : candidate);
+    try { localStorage.setItem('kadar-custom-looks', JSON.stringify(updated)); }
+    catch { setEditorError('Could not update this look on this device.'); return; }
+    customLooks = updated;
+    S.editorError = '';
+    render();
+  }
+  else if (a === 'deleteLook') {
+    const it = editorItem();
+    const updated = customLooks.filter(candidate => candidate.id !== it.adjustments.look);
+    try { localStorage.setItem('kadar-custom-looks', JSON.stringify(updated)); }
+    catch { setEditorError('Could not delete this look on this device.'); return; }
+    customLooks = updated;
+    it.adjustments.look = 'natural';
+    it.adjustments.lookAmount = 100;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'saveLook') {
+    const name = ($app.querySelector('#lookName')?.value || '').trim();
+    if (!name) {
+      setEditorError('Enter a name for this look first.');
+      return;
+    }
+    const it = editorItem();
+    recordUndo(it);
+    const currentAdjustments = effectiveAdjustments(it.adjustments);
+    const adjustments = Object.fromEntries(LOOK_ADJUSTMENT_KEYS.map(key => [key,
+      key === 'tonePoints'
+        ? (currentAdjustments.tonePoints || [0, 25, 50, 75, 100]).map(Number)
+        : Number(currentAdjustments[key] ?? (key === 'saturation' ? 100 : 0))]));
+    const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    customLooks.push({ id, name: name.slice(0, 24), adjustments });
+    try { localStorage.setItem('kadar-custom-looks', JSON.stringify(customLooks)); }
+    catch { customLooks.pop(); setEditorError('Could not save this look on this device.'); render(); return; }
+    for (const key of Object.keys(adjustments)) {
+      it.adjustments[key] = key === 'tonePoints' ? [0, 25, 50, 75, 100] : key === 'saturation' ? 100 : 0;
+    }
+    it.adjustments.look = id;
+    it.adjustments.lookAmount = 100;
+    S.editorError = '';
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'clearLocalMask') {
+    delete editorItem().adjustments.localMask;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'localGradient') {
+    S.localGradientMode = !S.localGradientMode;
+    S.localBrush = false;
+    S.healMode = false;
+    S.focusBrush = false;
+    S.focusPointer = null;
+    render();
+  }
+  else if (a === 'clearGradient') {
+    delete editorItem().adjustments.localGradient;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'rotate') {
+    const it = editorItem();
+    it.adjustments.rotation = ((Number(it.adjustments.rotation) || 0) + 90) % 360;
+    clearFocusEdits(it.adjustments);
+    delete it.adjustments.localMask;
+    delete it.adjustments.localGradient;
+    it.adjustments.heals = [];
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'flip') {
+    const edits = editorItem().adjustments;
+    edits.flip = !edits.flip;
+    clearFocusEdits(edits);
+    delete edits.localMask;
+    delete edits.localGradient;
+    edits.heals = [];
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'localBrush') {
+    S.localBrush = !S.localBrush;
+    S.localGradientMode = false;
+    S.focusBrush = false;
+    S.healMode = false;
+    S.focusPointer = null;
+    render();
+  }
+  else if (a === 'healMode') {
+    S.healMode = !S.healMode;
+    S.localBrush = false;
+    S.localGradientMode = false;
+    S.focusBrush = false;
+    S.focusPointer = null;
+    render();
+  }
+  else if (a === 'clearHealing') {
+    editorItem().adjustments.heals = [];
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
   else if (a === 'fuseSeries') fuseSeries();
   else if (a === 'undoFusion') {
     const it = editorItem();

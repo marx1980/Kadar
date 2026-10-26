@@ -133,6 +133,26 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .editor-nav{display:flex;align-items:center;justify-content:space-between;padding:8px var(--gut);color:var(--muted)}
 .editor-nav .btn{height:40px;padding:0 14px}
 .editor-nav svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.editor-history{display:flex;gap:8px;padding:4px var(--gut);justify-content:flex-end}
+.editor-history .btn{height:38px;padding:0 14px}
+.editor-history .btn[disabled]{opacity:.4}
+.edit-group{margin:6px var(--gut);padding:0 10px 8px;background:var(--surface);border-radius:10px}
+.edit-group>summary{padding:12px 2px;font-weight:600;cursor:pointer;list-style-position:inside}
+.edit-group .adjust{padding-left:2px;padding-right:2px}
+.look-list{display:flex;gap:8px;overflow-x:auto}
+.look-list .btn{height:40px;padding:0 14px}
+.look-list .btn[aria-pressed=true]{background:var(--mark);color:#26231a}
+.save-look{display:flex;gap:8px;padding-top:8px}
+.manage-look{display:flex;gap:8px;padding-top:8px}
+.manage-look input{min-width:0;flex:1;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--ink);font:inherit;padding:0 12px}
+.save-look input{min-width:0;flex:1;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--ink);font:inherit;padding:0 12px}
+.save-look .btn,.manage-look .btn{height:40px;padding:0 14px}
+.curve-editor,.hsl-group,.hsl-channel{margin:8px 0;padding:0 8px;background:var(--bg);border-radius:8px}
+.curve-editor>summary,.hsl-group>summary,.hsl-channel>summary{padding:10px 0;color:var(--ink);cursor:pointer}
+.tone-curve{display:block;width:100%;height:120px;background:var(--surface);border-radius:6px}
+.tone-curve-grid{fill:none;stroke:var(--line);stroke-width:1}
+.tone-curve polyline{fill:none;stroke:var(--mark);stroke-width:2}
+.reset-control{border:1px solid var(--line);border-radius:12px;padding:2px 8px;color:var(--muted);font:inherit;font-size:13px}
 .editor-photo{position:relative;margin:0 auto;max-height:52dvh;overflow:hidden;border-radius:6px;background:#1f2022;cursor:crosshair}
 .editor-photo.brushing{touch-action:none}
 .editor-photo img,.editor-photo canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}

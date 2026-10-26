@@ -175,19 +175,158 @@ export function bestFaceSources(items, frameIndex) {
   }).filter(Boolean);
 }
 
-export function cropRect(width, height, preset = 'original') {
+export function cropRect(width, height, preset = 'original', options = {}) {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new RangeError('Image dimensions must be positive');
   }
-  const aspect = { square: 1, portrait: 4 / 5, landscape: 3 / 2 }[preset];
-  if (!aspect) return { x: 0, y: 0, width, height };
+  const cropScale = Math.max(20, Math.min(100, Number(options.scale ?? 100))) / 100;
+  const aspect = preset === 'free' ? width / height : { square: 1, portrait: 4 / 5, landscape: 3 / 2 }[preset];
+  if (!aspect && cropScale === 1) return { x: 0, y: 0, width, height };
   const sourceAspect = width / height;
-  if (sourceAspect > aspect) {
-    const cropWidth = height * aspect;
-    return { x: (width - cropWidth) / 2, y: 0, width: cropWidth, height };
+  let cropWidth, cropHeight;
+  if (!aspect) {
+    cropWidth = width * cropScale;
+    cropHeight = height * cropScale;
+  } else if (sourceAspect > aspect) {
+    cropWidth = height * aspect * cropScale;
+    cropHeight = height * cropScale;
+  } else {
+    cropWidth = width * cropScale;
+    cropHeight = width / aspect * cropScale;
   }
-  const cropHeight = width / aspect;
-  return { x: 0, y: (height - cropHeight) / 2, width, height: cropHeight };
+  const xAlign = Math.max(0, Math.min(1, Number(options.x ?? 50) / 100));
+  const yAlign = Math.max(0, Math.min(1, Number(options.y ?? 50) / 100));
+  return {
+    x: (width - cropWidth) * xAlign,
+    y: (height - cropHeight) * yAlign,
+    width: cropWidth,
+    height: cropHeight,
+  };
+}
+
+const HSL_CHANNELS = [
+  ['Red', 0], ['Orange', 30], ['Yellow', 60], ['Green', 120],
+  ['Aqua', 180], ['Blue', 240], ['Purple', 275], ['Magenta', 315],
+];
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const delta = max - min;
+  let hue = 0;
+  const luminance = (max + min) / 2;
+  let saturation = 0;
+  if (delta) {
+    saturation = delta / (1 - Math.abs(2 * luminance - 1));
+    if (max === r) hue = ((g - b) / delta) % 6;
+    else if (max === g) hue = (b - r) / delta + 2;
+    else hue = (r - g) / delta + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+  return [hue, saturation, luminance];
+}
+function hslToRgb(hue, saturation, luminance) {
+  const c = (1 - Math.abs(2 * luminance - 1)) * saturation;
+  const h = ((hue % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs(h % 2 - 1));
+  const [r, g, b] = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x]
+    : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];
+  const m = luminance - c / 2;
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+export function toneCurveAt(value, points) {
+  const input = Math.max(0, Math.min(1, value));
+  if (!Array.isArray(points) || points.length !== 5 || points.some(point => !Number.isFinite(point))) return input;
+  const position = input * 4;
+  const index = Math.min(3, Math.floor(position));
+  const fraction = position - index;
+  return Math.max(0, Math.min(1, (points[index] * (1 - fraction) + points[index + 1] * fraction) / 100));
+}
+
+export function healSpotPixels(data, width, height, spot) {
+  if (!data || data.length !== width * height * 4 || !Number.isInteger(width) || !Number.isInteger(height) ||
+      width <= 0 || height <= 0 || !spot ||
+      ![spot.x, spot.y, spot.radius].every(Number.isFinite) || spot.x < 0 || spot.x > 1 ||
+      spot.y < 0 || spot.y > 1 || spot.radius <= 0) {
+    throw new RangeError('A valid image and normalized healing spot are required');
+  }
+  const source = new Uint8ClampedArray(data);
+  const radius = Math.max(2, Math.min(Math.max(width, height) * 0.08, spot.radius * width));
+  const cx = Math.round(spot.x * (width - 1)), cy = Math.round(spot.y * (height - 1));
+  const outer = radius * 1.8;
+  const minX = Math.max(0, Math.floor(cx - outer)), maxX = Math.min(width - 1, Math.ceil(cx + outer));
+  const minY = Math.max(0, Math.floor(cy - outer)), maxY = Math.min(height - 1, Math.ceil(cy + outer));
+  const samples = [[], [], []];
+  for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+    const distance = Math.hypot(x - cx, y - cy);
+    if (distance < radius * 1.15 || distance > outer) continue;
+    const offset = (y * width + x) * 4;
+    for (let channel = 0; channel < 3; channel++) samples[channel].push(source[offset + channel]);
+  }
+  if (!samples[0].length) return data;
+  const patchColor = samples.map(values => {
+    values.sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)];
+  });
+  const minPatchX = Math.max(0, Math.floor(cx - radius)), maxPatchX = Math.min(width - 1, Math.ceil(cx + radius));
+  const minPatchY = Math.max(0, Math.floor(cy - radius)), maxPatchY = Math.min(height - 1, Math.ceil(cy + radius));
+  for (let y = minPatchY; y <= maxPatchY; y++) for (let x = minPatchX; x <= maxPatchX; x++) {
+    const distance = Math.hypot(x - cx, y - cy);
+    if (distance > radius) continue;
+    const blend = Math.max(0, Math.min(1, (radius - distance) / Math.max(1, radius * 0.22)));
+    const offset = (y * width + x) * 4;
+    for (let channel = 0; channel < 3; channel++) {
+      data[offset + channel] = source[offset + channel] * (1 - blend) + patchColor[channel] * blend;
+    }
+  }
+  return data;
+}
+
+export function warpPerspective(data, width, height, vertical = 0, horizontal = 0) {
+  if (!data || data.length !== width * height * 4 || !Number.isInteger(width) || !Number.isInteger(height) ||
+      width <= 0 || height <= 0 || !Number.isFinite(vertical) || !Number.isFinite(horizontal)) {
+    throw new RangeError('A valid image and perspective values are required');
+  }
+  const v = Math.max(-30, Math.min(30, vertical)) / 100;
+  const h = Math.max(-30, Math.min(30, horizontal)) / 100;
+  if (!v && !h) return data;
+  const vx = Math.abs(v) * 0.35, hy = Math.abs(h) * 0.35;
+  const topInset = v > 0 ? vx : 0, bottomInset = v < 0 ? vx : 0;
+  const leftInset = h > 0 ? hy : 0, rightInset = h < 0 ? hy : 0;
+  const corners = [
+    [topInset, leftInset],
+    [1 - topInset, rightInset],
+    [1 - bottomInset, 1 - rightInset],
+    [bottomInset, 1 - leftInset],
+  ];
+  const [p0, p1, p2, p3] = corners;
+  const dx1 = p1[0] - p2[0], dx2 = p3[0] - p2[0], dx3 = p0[0] - p1[0] + p2[0] - p3[0];
+  const dy1 = p1[1] - p2[1], dy2 = p3[1] - p2[1], dy3 = p0[1] - p1[1] + p2[1] - p3[1];
+  const denominator = dx1 * dy2 - dx2 * dy1;
+  const g = Math.abs(dx3) + Math.abs(dy3) > 1e-8 ? (dx3 * dy2 - dx2 * dy3) / denominator : 0;
+  const f = Math.abs(dx3) + Math.abs(dy3) > 1e-8 ? (dx1 * dy3 - dx3 * dy1) / denominator : 0;
+  const a = p1[0] - p0[0] + g * p1[0];
+  const b = p3[0] - p0[0] + f * p3[0];
+  const c = p0[0];
+  const d = p1[1] - p0[1] + g * p1[1];
+  const e = p3[1] - p0[1] + f * p3[1];
+  const k = p0[1];
+  const source = new Uint8ClampedArray(data);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const u = width > 1 ? x / (width - 1) : 0, w = height > 1 ? y / (height - 1) : 0;
+    const divisor = g * u + f * w + 1;
+    const sx = Math.max(0, Math.min(width - 1, (a * u + b * w + c) / divisor * (width - 1)));
+    const sy = Math.max(0, Math.min(height - 1, (d * u + e * w + k) / divisor * (height - 1)));
+    const x0 = Math.floor(sx), y0 = Math.floor(sy), x1 = Math.min(width - 1, x0 + 1), y1 = Math.min(height - 1, y0 + 1);
+    const tx = sx - x0, ty = sy - y0, out = (y * width + x) * 4;
+    for (let channel = 0; channel < 4; channel++) {
+      const top = source[(y0 * width + x0) * 4 + channel] * (1 - tx) + source[(y0 * width + x1) * 4 + channel] * tx;
+      const bottom = source[(y1 * width + x0) * 4 + channel] * (1 - tx) + source[(y1 * width + x1) * 4 + channel] * tx;
+      data[out + channel] = top * (1 - ty) + bottom * ty;
+    }
+  }
+  return data;
 }
 
 export function adjustPixels(data, width, height, adjustments = {}) {
@@ -195,17 +334,104 @@ export function adjustPixels(data, width, height, adjustments = {}) {
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));
   const contrast = Math.max(-100, Math.min(100, Number(adjustments.contrast) || 0));
   const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  const curve = Math.max(-100, Math.min(100, Number(adjustments.curve) || 0)) / 100;
+  const tonePoints = adjustments.tonePoints;
   const saturation = Math.max(0, Math.min(200, Number(adjustments.saturation ?? 100) || 0)) / 100;
   const sharpness = Math.max(0, Math.min(2, Number(adjustments.sharpness) || 0));
+  const temperature = Math.max(-100, Math.min(100, Number(adjustments.temperature) || 0));
+  const tint = Math.max(-100, Math.min(100, Number(adjustments.tint) || 0));
+  const highlights = Math.max(-100, Math.min(100, Number(adjustments.highlights) || 0)) / 100;
+  const shadows = Math.max(-100, Math.min(100, Number(adjustments.shadows) || 0)) / 100;
+  const localMask = adjustments.localMask;
+  const localExposure = Number(adjustments.localExposure) || 0;
+  const localSaturation = Number(adjustments.localSaturation) || 0;
+  const localContrast = Math.max(-100, Math.min(100, Number(adjustments.localContrast) || 0));
+  const localContrastFactor = (259 * (localContrast + 255)) / (255 * (259 - localContrast));
+  const localTemperature = Math.max(-100, Math.min(100, Number(adjustments.localTemperature) || 0));
+  const localTint = Math.max(-100, Math.min(100, Number(adjustments.localTint) || 0));
+  const gradient = adjustments.localGradient;
+  const activeHsl = HSL_CHANNELS.map(([name, center]) => {
+    return {
+      center,
+      hue: Math.max(-180, Math.min(180, Number(adjustments[`hsl${name}Hue`]) || 0)),
+      saturation: Math.max(-100, Math.min(100, Number(adjustments[`hsl${name}Saturation`]) || 0)) / 100,
+      luminance: Math.max(-100, Math.min(100, Number(adjustments[`hsl${name}Luminance`]) || 0)) / 100,
+      active: ['Hue', 'Saturation', 'Luminance'].some(suffix => Number(adjustments[`hsl${name}${suffix}`] || 0) !== 0),
+    };
+  }).filter(channel => channel.active);
 
   for (let i = 0; i < data.length; i += 4) {
+    const pixelIndex = i / 4;
+    const px = pixelIndex % width;
+    const py = Math.floor(pixelIndex / width);
     let r = (data[i] * exposure - 128) * contrastFactor + 128;
     let g = (data[i + 1] * exposure - 128) * contrastFactor + 128;
     let b = (data[i + 2] * exposure - 128) * contrastFactor + 128;
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const highlightWeight = luminance * luminance;
+    const shadowWeight = (1 - luminance) * (1 - luminance);
+    r += r * highlights * highlightWeight + (255 - r) * shadows * shadowWeight;
+    g += g * highlights * highlightWeight + (255 - g) * shadows * shadowWeight;
+    b += b * highlights * highlightWeight + (255 - b) * shadows * shadowWeight;
+    r += temperature * 0.65 - tint * 0.2;
+    g += tint * 0.35;
+    b -= temperature * 0.65 + tint * 0.2;
     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-    data[i] = gray + (r - gray) * saturation;
-    data[i + 1] = gray + (g - gray) * saturation;
-    data[i + 2] = gray + (b - gray) * saturation;
+    const curveX = Math.max(0, Math.min(1, gray / 255));
+    const curvedGray = (Array.isArray(tonePoints) ? toneCurveAt(curveX, tonePoints)
+      : curveX + curve * (curveX - 0.5) * (1 - Math.abs(2 * curveX - 1)) * 0.8) * 255;
+    r += curvedGray - gray;
+    g += curvedGray - gray;
+    b += curvedGray - gray;
+    const brushMask = localMask && localMask.data?.length === localMask.width * localMask.height
+      ? localMask.data[Math.min(localMask.height - 1, Math.floor(py / height * localMask.height)) *
+        localMask.width + Math.min(localMask.width - 1, Math.floor(px / width * localMask.width))]
+      : 0;
+    let gradientMask = 0;
+    if (gradient && [gradient.x, gradient.y, gradient.endX, gradient.endY].every(Number.isFinite)) {
+      const dx = gradient.endX - gradient.x, dy = gradient.endY - gradient.y;
+      const lengthSquared = dx * dx + dy * dy;
+      if (lengthSquared > 1e-6) {
+        const projection = Math.max(0, Math.min(1, ((px / Math.max(1, width - 1) - gradient.x) * dx +
+          (py / Math.max(1, height - 1) - gradient.y) * dy) / lengthSquared));
+        const feather = Math.max(0.01, Math.min(1, Number(gradient.feather ?? adjustments.localGradientFeather ?? 50) / 100));
+        const t = Math.max(0, Math.min(1, (1 - projection) / feather));
+        gradientMask = t * t * (3 - 2 * t);
+      }
+    }
+    const mask = Math.max(brushMask, gradientMask);
+    const localExposureFactor = 2 ** (Math.max(-2, Math.min(2, localExposure)) * mask);
+    const localSat = 1 + Math.max(-1, Math.min(1, localSaturation / 100)) * mask;
+    r += (localTemperature * 0.65 - localTint * 0.2) * mask;
+    g += localTint * 0.35 * mask;
+    b -= (localTemperature * 0.65 + localTint * 0.2) * mask;
+    const localGray = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = ((localGray + (r - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    g = ((localGray + (g - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    b = ((localGray + (b - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    if (activeHsl.length) {
+      const [hue, hslSaturation, luminance] = rgbToHsl(r, g, b);
+      let hueShift = 0, saturationShift = 0, luminanceShift = 0, totalWeight = 0;
+      for (const channel of hslSaturation > 0.001 ? activeHsl : []) {
+        const distance = Math.abs(((hue - channel.center + 540) % 360) - 180);
+        const weight = Math.max(0, 1 - distance / 38);
+        hueShift += channel.hue * weight;
+        saturationShift += channel.saturation * weight;
+        luminanceShift += channel.luminance * weight;
+        totalWeight += weight;
+      }
+      if (totalWeight) {
+        [data[i], data[i + 1], data[i + 2]] = hslToRgb(
+          hue + hueShift / totalWeight,
+          Math.max(0, Math.min(1, hslSaturation + saturationShift / totalWeight)),
+          Math.max(0, Math.min(1, luminance + luminanceShift / totalWeight)),
+        );
+      } else {
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      }
+    } else {
+      data[i] = r; data[i + 1] = g; data[i + 2] = b;
+    }
   }
   if (!sharpness || !width || !height) return data;
 

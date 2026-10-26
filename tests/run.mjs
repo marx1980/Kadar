@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -122,6 +122,75 @@ test('editor: default adjustments preserve source pixels', () => {
   adjustPixels(pixels, 1, 1);
   assert.deepEqual([...pixels], [25, 100, 220, 255]);
 });
+test('editor: local exposure brush only changes masked pixels', () => {
+  const pixels = new Uint8ClampedArray([80, 80, 80, 255, 80, 80, 80, 255]);
+  adjustPixels(pixels, 2, 1, {
+    localExposure: 1,
+    localMask: { width: 2, height: 1, data: new Float32Array([1, 0]) },
+  });
+  assert.deepEqual([...pixels], [160, 160, 160, 255, 80, 80, 80, 255]);
+});
+test('editor: white balance and tone controls affect pixel values', () => {
+  const warm = new Uint8ClampedArray([100, 100, 100, 255]);
+  adjustPixels(warm, 1, 1, { temperature: 20 });
+  assert.ok(warm[0] > 100 && warm[2] < 100);
+  const lifted = new Uint8ClampedArray([20, 20, 20, 255]);
+  adjustPixels(lifted, 1, 1, { shadows: 50 });
+  assert.ok(lifted[0] > 20);
+});
+test('editor: tone curve and per-color HSL adjustments affect only their targets', () => {
+  const curve = new Uint8ClampedArray([64, 64, 64, 255]);
+  adjustPixels(curve, 1, 1, { curve: 100 });
+  assert.ok(curve[0] < 64);
+  const colors = new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 255]);
+  adjustPixels(colors, 2, 1, { hslRedSaturation: -100 });
+  assert.ok(colors[0] > 120 && colors[0] < 135);
+  assert.deepEqual([...colors.slice(4, 8)], [0, 0, 255, 255]);
+});
+test('editor: tone curve control points interpolate and clamp', () => {
+  assert.equal(toneCurveAt(0.125, [0, 50, 50, 75, 100]), 0.25);
+  assert.equal(toneCurveAt(0.5, [-20, 25, 50, 75, 120]), 0.5);
+  assert.equal(toneCurveAt(0.5, [0, 25, 50]), 0.5);
+});
+test('editor: local gradient blends its exposure from start to end', () => {
+  const pixels = new Uint8ClampedArray([80, 80, 80, 255, 80, 80, 80, 255, 80, 80, 80, 255]);
+  adjustPixels(pixels, 3, 1, {
+    localExposure: 1,
+    localGradient: { x: 0, y: 0, endX: 1, endY: 0 },
+    localGradientFeather: 100,
+  });
+  assert.equal(pixels[0], 160);
+  assert.ok(pixels[4] > 80 && pixels[4] < 160);
+  assert.equal(pixels[8], 80);
+});
+test('editor: local temperature and tint only affect the painted mask', () => {
+  const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 100, 100, 255]);
+  adjustPixels(pixels, 2, 1, {
+    localTemperature: 20,
+    localTint: 20,
+    localMask: { width: 2, height: 1, data: new Float32Array([1, 0]) },
+  });
+  assert.ok(pixels[0] > 100 && pixels[1] > 100 && pixels[2] < 100);
+  assert.deepEqual([...pixels.slice(4)], [100, 100, 100, 255]);
+});
+test('editor: spot healing replaces a small outlier from the surrounding median', () => {
+  const pixels = new Uint8ClampedArray(9 * 9 * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 120, 140, 255], i);
+  const center = (4 * 9 + 4) * 4;
+  pixels.set([255, 0, 0, 255], center);
+  healSpotPixels(pixels, 9, 9, { x: 4 / 8, y: 4 / 8, radius: 0.2 });
+  assert.deepEqual([...pixels.slice(center, center + 4)], [100, 120, 140, 255]);
+  assert.throws(() => healSpotPixels(pixels, 9, 9, { x: 2, y: 0.5, radius: 0.2 }), RangeError);
+});
+test('editor: perspective warp preserves neutral pixels and corrects keystone sampling', () => {
+  const neutral = new Uint8ClampedArray([1, 2, 3, 255]);
+  assert.equal(warpPerspective(neutral, 1, 1), neutral);
+  const pixels = new Uint8ClampedArray(3 * 3 * 4);
+  for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) pixels.set([x * 100, 0, 0, 255], (y * 3 + x) * 4);
+  warpPerspective(pixels, 3, 3, 20, 0);
+  assert.ok(pixels[0] > 0);
+  assert.throws(() => warpPerspective(new Uint8ClampedArray(3), 1, 1), RangeError);
+});
 test('editor: unsharp mask increases local edge contrast and preserves alpha', () => {
   const pixels = new Uint8ClampedArray(5 * 5 * 4);
   for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 100, 100, 255], i);
@@ -229,6 +298,8 @@ test('editor: crop presets return centered rectangles at the requested ratio', (
   assert.equal(landscape.width, 400);
   assert.ok(Math.abs(landscape.height - 400 / 1.5) < 1e-9);
   assert.ok(Math.abs(landscape.y - (300 - landscape.height) / 2) < 1e-9);
+  assert.deepEqual(cropRect(400, 300, 'square', { x: 100 }), { x: 100, y: 0, width: 300, height: 300 });
+  assert.deepEqual(cropRect(400, 300, 'free', { scale: 50 }), { x: 100, y: 75, width: 200, height: 150 });
   assert.throws(() => cropRect(0, 300), RangeError);
 });
 
