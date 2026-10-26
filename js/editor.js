@@ -329,6 +329,32 @@ export function warpPerspective(data, width, height, vertical = 0, horizontal = 
   return data;
 }
 
+export function suppressNightSpeckles(data, width, height, strength) {
+  const source = new Uint8ClampedArray(data);
+  const luma = new Float32Array(width * height);
+  for (let p = 0; p < luma.length; p++) luma[p] = 0.299 * source[p * 4] + 0.587 * source[p * 4 + 1] + 0.114 * source[p * 4 + 2];
+  const darkLimit = 40 + strength * 80;
+  const minLift = 24 - strength * 16;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const p = y * width + x;
+      let sum = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) sum += luma[p + dy * width + dx];
+      const mean = sum / 8;
+      const lift = luma[p] - mean;
+      if (mean > darkLimit || lift < minLift) continue;
+      const amount = Math.min(1, lift / (minLift * 2)) * Math.min(1, 0.5 + strength);
+      for (let channel = 0; channel < 3; channel++) {
+        let channelSum = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) channelSum += source[(p + dy * width + dx) * 4 + channel];
+        const i = p * 4 + channel;
+        data[i] = source[i] + (channelSum / 8 - source[i]) * amount;
+      }
+    }
+  }
+  return data;
+}
+
 export function adjustPixels(data, width, height, adjustments = {}) {
   if (!data || data.length !== width * height * 4) throw new RangeError('Pixel data does not match dimensions');
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));
@@ -359,6 +385,9 @@ export function adjustPixels(data, width, height, adjustments = {}) {
       active: ['Hue', 'Saturation', 'Luminance'].some(suffix => Number(adjustments[`hsl${name}${suffix}`] || 0) !== 0),
     };
   }).filter(channel => channel.active);
+
+  const nightClean = Math.max(0, Math.min(100, Number(adjustments.nightClean) || 0)) / 100;
+  if (nightClean && width > 2 && height > 2) suppressNightSpeckles(data, width, height, nightClean);
 
   for (let i = 0; i < data.length; i += 4) {
     const pixelIndex = i / 4;

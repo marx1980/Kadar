@@ -108,9 +108,9 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .seg button{height:var(--btn-sm);min-width:var(--tap);padding:0 16px;border-radius:19px;font-weight:600;color:var(--muted)}
 .seg button[aria-pressed=true]{background:var(--mark);color:#26231a}
 .seg.decide button[aria-pressed=true][data-v=delete]{background:var(--reject);color:#2a1410}
-.faces{display:flex;gap:8px;overflow-x:auto;padding:8px var(--gut);scrollbar-width:none}
-.face{flex:0 0 auto;width:64px;display:grid;gap:3px;justify-items:center;font-size:14px;color:var(--muted)}
-.face img{width:64px;height:64px;border-radius:32px;object-fit:cover;border:2px solid transparent}
+.faces{display:flex;gap:10px;overflow-x:auto;padding:8px var(--gut);scrollbar-width:none}
+.face{flex:0 0 auto;width:min(44vw,200px);display:grid;gap:3px;justify-items:center;font-size:14px;color:var(--muted)}
+.face img{width:100%;aspect-ratio:1;border-radius:12px;object-fit:cover;border:2px solid transparent}
 .face.bad img{border-color:var(--reject)}
 .face.bad{color:#FFB4A6}
 .film{display:flex;gap:12px;overflow-x:auto;padding:12px var(--gut) 20px;scrollbar-width:none}

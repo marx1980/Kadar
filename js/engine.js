@@ -13,7 +13,7 @@ const EMBED = MODELS + 'image_embedder/mobilenet_v3_small/float32/latest/mobilen
 
 const VIEW_MAX = 1600;   // analysis + review image size
 const THUMB_MAX = 360;
-const FACE_PX = 128;
+const FACE_PX = 256;
 const SUBJECT_PX = 256;
 const GRID_PX = 512;
 

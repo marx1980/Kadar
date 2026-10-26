@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
+import { suppressNightSpeckles, adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
 import { readFileSync } from 'node:fs';
 import { HELP, wordCount } from '../js/help.js';
 import { TUTORIALS, meets, stepIndex, firstStep, loadProgress, saveProgress, markDone, resetProgress, STORAGE_KEY } from '../js/tutorials.js';
@@ -119,6 +119,13 @@ test('editor: exposure, contrast and saturation adjust RGB values', () => {
   const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 50, 0, 255]);
   adjustPixels(pixels, 2, 1, { exposure: 1, saturation: 0 });
   assert.deepEqual([...pixels], [200, 200, 200, 255, 118, 118, 118, 255]);
+});
+test('editor: night clean-up averages bright speckles into dark background', () => {
+  const pixels = new Uint8ClampedArray(9 * 4).fill(10);
+  for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
+  pixels.set([120, 120, 120], 16);
+  adjustPixels(pixels, 3, 3, { nightClean: 100 });
+  assert.ok(pixels[16] < 30);
 });
 test('editor: default adjustments preserve source pixels', () => {
   const pixels = new Uint8ClampedArray([25, 100, 220, 255]);

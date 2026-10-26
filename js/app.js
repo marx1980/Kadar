@@ -261,7 +261,7 @@ function reviewScreen() {
   <p class="review-note">Keep frames are saved with Save keepers. Delete frames are only suggestions for you to remove in Photos. Hold a coloured chip to see what it means.</p>
   ${faces.length ? `<div class="faces">${faces.map(f => {
     const iss = faceIssues(f, st);
-    return `<span class="face ${iss.length ? 'bad' : ''}"><img src="${f.thumb}" alt="">${iss[0] || ''}</span>`;
+    return `<span class="face ${iss.length ? 'bad' : ''}"><img src="${f.thumb}" alt="">${iss.join(', ')}</span>`;
   }).join('')}</div>` : ''}
   <div class="film" id="film">${s.items.map((x, k) => `<button data-act="frame" data-f="${k}" data-help="frame" aria-label="Frame ${x.frame}">${frame(x, k === S.fi ? 'cur' : '')}</button>`).join('')}</div>`;
 }
@@ -295,6 +295,7 @@ function editorScreen() {
     ['tint', 'Tint', -100, 100, 1, `${Number(shownEdits.tint || 0)}`],
     ['saturation', 'Colour intensity (Saturation)', 0, 200, 1, `${Number(shownEdits.saturation ?? 100)}%`],
     ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(shownEdits.sharpness || 0).toFixed(1)}`],
+    ['nightClean', 'Night clean-up (speckles)', 0, 100, 1, `${Number(shownEdits.nightClean || 0)}%`],
   ];
   const focusPerson = edits.focusPerson;
   const focusMask = edits.focusMask;
@@ -348,7 +349,7 @@ function editorScreen() {
   </details>
   <details class="edit-group" data-group="light" ${grp('light')}>
     <summary data-help="group-light">Light</summary>
-    ${controls.slice(0, 4).map(([key, label, min, max, step, value]) => `
+    ${[...controls.slice(0, 4), controls[8]].map(([key, label, min, max, step, value]) => `
       <label class="adjust" data-help="slider-${key}"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? 0}"></label>`).join('')}
     ${adv ? `<details class="curve-editor">
@@ -383,7 +384,7 @@ function editorScreen() {
   </details>
   ${adv ? `<details class="edit-group" data-group="detail" ${grp('detail')}>
     <summary data-help="group-detail">Detail and retouch</summary>
-    ${controls.slice(7).map(([key, label, min, max, step, value]) => `
+    ${controls.slice(7, 8).map(([key, label, min, max, step, value]) => `
       <label class="adjust" data-help="slider-${key}"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key] ?? 0}"></label>`).join('')}
     <div class="focus-actions">
@@ -1768,7 +1769,7 @@ $app.addEventListener('click', e => {
     const key = t.dataset.k;
     const defaults = {
       exposure: 0, contrast: 0, highlights: 0, shadows: 0, temperature: 0, tint: 0,
-      saturation: 100, sharpness: 0, lookAmount: 100, scale: 100, x: 50, y: 50,
+      saturation: 100, sharpness: 0, nightClean: 0, lookAmount: 100, scale: 100, x: 50, y: 50,
       localExposure: 0, localSaturation: 0, localContrast: 0, localTemperature: 0, localTint: 0, localGradientFeather: 50,
       focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
     };
