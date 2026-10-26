@@ -143,8 +143,12 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .look-list .btn{height:40px;padding:0 14px}
 .look-list .btn[aria-pressed=true]{background:var(--mark);color:#26231a}
 .save-look{display:flex;gap:8px;padding-top:8px}
+.manage-look{display:flex;gap:8px;padding-top:8px}
+.manage-look input{min-width:0;flex:1;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--ink);font:inherit;padding:0 12px}
 .save-look input{min-width:0;flex:1;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--ink);font:inherit;padding:0 12px}
-.save-look .btn{height:40px;padding:0 14px}
+.save-look .btn,.manage-look .btn{height:40px;padding:0 14px}
+.curve-editor,.hsl-group,.hsl-channel{margin:8px 0;padding:0 8px;background:var(--bg);border-radius:8px}
+.curve-editor>summary,.hsl-group>summary,.hsl-channel>summary{padding:10px 0;color:var(--ink);cursor:pointer}
 .reset-control{border:1px solid var(--line);border-radius:12px;padding:2px 8px;color:var(--muted);font:inherit;font-size:13px}
 .editor-photo{position:relative;margin:0 auto;max-height:52dvh;overflow:hidden;border-radius:6px;background:#1f2022;cursor:crosshair}
 .editor-photo.brushing{touch-action:none}

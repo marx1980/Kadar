@@ -283,6 +283,52 @@ export function healSpotPixels(data, width, height, spot) {
   return data;
 }
 
+export function warpPerspective(data, width, height, vertical = 0, horizontal = 0) {
+  if (!data || data.length !== width * height * 4 || !Number.isInteger(width) || !Number.isInteger(height) ||
+      width <= 0 || height <= 0 || !Number.isFinite(vertical) || !Number.isFinite(horizontal)) {
+    throw new RangeError('A valid image and perspective values are required');
+  }
+  const v = Math.max(-30, Math.min(30, vertical)) / 100;
+  const h = Math.max(-30, Math.min(30, horizontal)) / 100;
+  if (!v && !h) return data;
+  const vx = Math.abs(v) * 0.35, hy = Math.abs(h) * 0.35;
+  const topInset = v > 0 ? vx : 0, bottomInset = v < 0 ? vx : 0;
+  const leftInset = h > 0 ? hy : 0, rightInset = h < 0 ? hy : 0;
+  const corners = [
+    [topInset, leftInset],
+    [1 - topInset, rightInset],
+    [1 - bottomInset, 1 - rightInset],
+    [bottomInset, 1 - leftInset],
+  ];
+  const [p0, p1, p2, p3] = corners;
+  const dx1 = p1[0] - p2[0], dx2 = p3[0] - p2[0], dx3 = p0[0] - p1[0] + p2[0] - p3[0];
+  const dy1 = p1[1] - p2[1], dy2 = p3[1] - p2[1], dy3 = p0[1] - p1[1] + p2[1] - p3[1];
+  const denominator = dx1 * dy2 - dx2 * dy1;
+  const g = Math.abs(dx3) + Math.abs(dy3) > 1e-8 ? (dx3 * dy2 - dx2 * dy3) / denominator : 0;
+  const f = Math.abs(dx3) + Math.abs(dy3) > 1e-8 ? (dx1 * dy3 - dx3 * dy1) / denominator : 0;
+  const a = p1[0] - p0[0] + g * p1[0];
+  const b = p3[0] - p0[0] + f * p3[0];
+  const c = p0[0];
+  const d = p1[1] - p0[1] + g * p1[1];
+  const e = p3[1] - p0[1] + f * p3[1];
+  const k = p0[1];
+  const source = new Uint8ClampedArray(data);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const u = width > 1 ? x / (width - 1) : 0, w = height > 1 ? y / (height - 1) : 0;
+    const divisor = g * u + f * w + 1;
+    const sx = Math.max(0, Math.min(width - 1, (a * u + b * w + c) / divisor * (width - 1)));
+    const sy = Math.max(0, Math.min(height - 1, (d * u + e * w + k) / divisor * (height - 1)));
+    const x0 = Math.floor(sx), y0 = Math.floor(sy), x1 = Math.min(width - 1, x0 + 1), y1 = Math.min(height - 1, y0 + 1);
+    const tx = sx - x0, ty = sy - y0, out = (y * width + x) * 4;
+    for (let channel = 0; channel < 4; channel++) {
+      const top = source[(y0 * width + x0) * 4 + channel] * (1 - tx) + source[(y0 * width + x1) * 4 + channel] * tx;
+      const bottom = source[(y1 * width + x0) * 4 + channel] * (1 - tx) + source[(y1 * width + x1) * 4 + channel] * tx;
+      data[out + channel] = top * (1 - ty) + bottom * ty;
+    }
+  }
+  return data;
+}
+
 export function adjustPixels(data, width, height, adjustments = {}) {
   if (!data || data.length !== width * height * 4) throw new RangeError('Pixel data does not match dimensions');
   const exposure = 2 ** Math.max(-4, Math.min(4, Number(adjustments.exposure) || 0));
@@ -348,7 +394,7 @@ export function adjustPixels(data, width, height, adjustments = {}) {
       if (lengthSquared > 1e-6) {
         const projection = Math.max(0, Math.min(1, ((px / Math.max(1, width - 1) - gradient.x) * dx +
           (py / Math.max(1, height - 1) - gradient.y) * dy) / lengthSquared));
-        const feather = Math.max(0.01, Math.min(1, Number(gradient.feather) || 0.5));
+        const feather = Math.max(0.01, Math.min(1, Number(gradient.feather ?? adjustments.localGradientFeather ?? 50) / 100));
         const t = Math.max(0, Math.min(1, (1 - projection) / feather));
         gradientMask = t * t * (3 - 2 * t);
       }
@@ -359,9 +405,10 @@ export function adjustPixels(data, width, height, adjustments = {}) {
     r += (localTemperature * 0.65 - localTint * 0.2) * mask;
     g += localTint * 0.35 * mask;
     b -= (localTemperature * 0.65 + localTint * 0.2) * mask;
-    r = ((gray + (r - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
-    g = ((gray + (g - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
-    b = ((gray + (b - gray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    const localGray = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = ((localGray + (r - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    g = ((localGray + (g - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
+    b = ((localGray + (b - localGray) * saturation * localSat - 128) * (1 + (localContrastFactor - 1) * mask) + 128) * localExposureFactor;
     if (activeHsl.length) {
       const [hue, hslSaturation, luminance] = rgbToHsl(r, g, b);
       let hueShift = 0, saturationShift = 0, luminanceShift = 0, totalWeight = 0;
