@@ -1,9 +1,10 @@
+import { frameOverlays } from '../js/rank.js';
 // Node tests for the pure modules: node tests/run.mjs
 import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
+import { suppressNightSpeckles, adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
 import { readFileSync } from 'node:fs';
 import { HELP, wordCount } from '../js/help.js';
 import { TUTORIALS, meets, stepIndex, firstStep, loadProgress, saveProgress, markDone, resetProgress, STORAGE_KEY } from '../js/tutorials.js';
@@ -115,10 +116,24 @@ test('edges and cosine', () => {
   assert.deepEqual(edgesTouched({ x: 0, y: 0.2, w: 0.3, h: 0.3 }, 0.01), { left: true, top: false, right: false, bottom: false });
   assert.ok(Math.abs(cosine([1, 0], [1, 0]) - 1) < 1e-9);
 });
+test('rank: frameOverlays marks regions behind non-face flags', () => {
+  const subject = { x: 0.2, y: 0.2, w: 0.3, h: 0.3 };
+  const o = frameOverlays({ flags: ['Blur', 'Exposure'], subject: { box: subject }, exposure: { clipHi: 0.3, clipLo: 0 } });
+  assert.deepEqual(o.map(x => x.kind), ['Blur', 'Exposure']);
+  assert.deepEqual(o[0].box, subject);
+  assert.ok(o[1].whole);
+});
 test('editor: exposure, contrast and saturation adjust RGB values', () => {
   const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 50, 0, 255]);
   adjustPixels(pixels, 2, 1, { exposure: 1, saturation: 0 });
   assert.deepEqual([...pixels], [200, 200, 200, 255, 118, 118, 118, 255]);
+});
+test('editor: night clean-up averages bright speckles into dark background', () => {
+  const pixels = new Uint8ClampedArray(9 * 4).fill(10);
+  for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
+  pixels.set([120, 120, 120], 16);
+  adjustPixels(pixels, 3, 3, { nightClean: 100 });
+  assert.ok(pixels[16] < 30);
 });
 test('editor: default adjustments preserve source pixels', () => {
   const pixels = new Uint8ClampedArray([25, 100, 220, 255]);
