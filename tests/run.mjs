@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
 import { laplacianVar, gridSharpness, exposureStats, yawFromLandmarks, awkwardScore, eyesClosedScore, edgesTouched, cosine } from '../js/metrics.js';
 import { buildSeries, rankSeries, rankAll, decide, DEFAULTS, faceIssues } from '../js/rank.js';
-import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex } from '../js/editor.js';
+import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, toneCurveAt, warpPerspective } from '../js/editor.js';
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log('ok  ', name); };
@@ -146,6 +146,40 @@ test('editor: tone curve and per-color HSL adjustments affect only their targets
   adjustPixels(colors, 2, 1, { hslRedSaturation: -100 });
   assert.ok(colors[0] > 120 && colors[0] < 135);
   assert.deepEqual([...colors.slice(4, 8)], [0, 0, 255, 255]);
+});
+test('editor: tone curve control points interpolate and clamp', () => {
+  assert.equal(toneCurveAt(0.125, [0, 50, 50, 75, 100]), 0.25);
+  assert.equal(toneCurveAt(0.5, [-20, 25, 50, 75, 120]), 0.5);
+  assert.equal(toneCurveAt(0.5, [0, 25, 50]), 0.5);
+});
+test('editor: local gradient blends its exposure from start to end', () => {
+  const pixels = new Uint8ClampedArray([80, 80, 80, 255, 80, 80, 80, 255, 80, 80, 80, 255]);
+  adjustPixels(pixels, 3, 1, {
+    localExposure: 1,
+    localGradient: { x: 0, y: 0, endX: 1, endY: 0 },
+    localGradientFeather: 100,
+  });
+  assert.equal(pixels[0], 160);
+  assert.ok(pixels[4] > 80 && pixels[4] < 160);
+  assert.equal(pixels[8], 80);
+});
+test('editor: spot healing replaces a small outlier from the surrounding median', () => {
+  const pixels = new Uint8ClampedArray(9 * 9 * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 120, 140, 255], i);
+  const center = (4 * 9 + 4) * 4;
+  pixels.set([255, 0, 0, 255], center);
+  healSpotPixels(pixels, 9, 9, { x: 4 / 8, y: 4 / 8, radius: 0.2 });
+  assert.deepEqual([...pixels.slice(center, center + 4)], [100, 120, 140, 255]);
+  assert.throws(() => healSpotPixels(pixels, 9, 9, { x: 2, y: 0.5, radius: 0.2 }), RangeError);
+});
+test('editor: perspective warp preserves neutral pixels and corrects keystone sampling', () => {
+  const neutral = new Uint8ClampedArray([1, 2, 3, 255]);
+  assert.equal(warpPerspective(neutral, 1, 1), neutral);
+  const pixels = new Uint8ClampedArray(3 * 3 * 4);
+  for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) pixels.set([x * 100, 0, 0, 255], (y * 3 + x) * 4);
+  warpPerspective(pixels, 3, 3, 20, 0);
+  assert.ok(pixels[0] > 0);
+  assert.throws(() => warpPerspective(new Uint8ClampedArray(3), 1, 1), RangeError);
 });
 test('editor: unsharp mask increases local edge contrast and preserves alpha', () => {
   const pixels = new Uint8ClampedArray(5 * 5 * 4);

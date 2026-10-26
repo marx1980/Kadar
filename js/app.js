@@ -577,6 +577,9 @@ async function openPhotosForEditing(files) {
   S.editorMode = 'photos';
   S.editIndex = 0;
   S.focusBrush = false;
+  S.localBrush = false;
+  S.localGradientMode = false;
+  S.healMode = false;
   S.focusPointer = null;
   S.screen = 'editor';
   S.compare = 'after';
@@ -624,6 +627,9 @@ async function resumeRecentEdit() {
     S.editIndex = Math.max(0, Math.min(session.index || 0, S.editItems.length - 1));
     S.editorMode = 'photos';
     S.focusBrush = false;
+    S.localBrush = false;
+    S.localGradientMode = false;
+    S.healMode = false;
     S.focusPointer = null;
     S.error = '';
     S.editorError = '';
@@ -1216,6 +1222,7 @@ function stepEditor(df) {
   S.editIndex = n;
   S.focusBrush = false;
   S.localBrush = false;
+  S.localGradientMode = false;
   S.healMode = false;
   S.focusPointer = null;
   S.editorError = '';
@@ -1489,7 +1496,7 @@ $app.addEventListener('click', e => {
     S.focusPointer = null;
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.focusBrush = false; S.localBrush = false; S.healMode = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
+  else if (a === 'editorBack') { S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
   else if (a === 'editorPrev' && S.editorMode === 'photos') stepEditor(-1);
   else if (a === 'editorNext' && S.editorMode === 'photos') stepEditor(1);
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
@@ -1503,6 +1510,7 @@ $app.addEventListener('click', e => {
       it.adjustments = from.pop();
       S.focusBrush = false;
       S.localBrush = false;
+      S.localGradientMode = false;
       S.healMode = false;
       if (S.editorMode === 'photos') scheduleRecentEditSave();
       render();
@@ -1511,7 +1519,7 @@ $app.addEventListener('click', e => {
   else if (a === 'resetAll') {
     const it = editorItem();
     it.adjustments = { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
-    S.focusBrush = false; S.localBrush = false; S.healMode = false;
+    S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false;
     S.focusPointer = null;
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
@@ -1624,6 +1632,7 @@ $app.addEventListener('click', e => {
     it.adjustments.rotation = ((Number(it.adjustments.rotation) || 0) + 90) % 360;
     clearFocusEdits(it.adjustments);
     delete it.adjustments.localMask;
+    delete it.adjustments.localGradient;
     it.adjustments.heals = [];
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
@@ -1633,12 +1642,14 @@ $app.addEventListener('click', e => {
     edits.flip = !edits.flip;
     clearFocusEdits(edits);
     delete edits.localMask;
+    delete edits.localGradient;
     edits.heals = [];
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
   }
   else if (a === 'localBrush') {
     S.localBrush = !S.localBrush;
+    S.localGradientMode = false;
     S.focusBrush = false;
     S.healMode = false;
     S.focusPointer = null;
@@ -1647,6 +1658,7 @@ $app.addEventListener('click', e => {
   else if (a === 'healMode') {
     S.healMode = !S.healMode;
     S.localBrush = false;
+    S.localGradientMode = false;
     S.focusBrush = false;
     S.focusPointer = null;
     render();
