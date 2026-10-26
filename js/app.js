@@ -1,6 +1,8 @@
 import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
 import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, warpPerspective } from './editor.js';
 import { loadRecentEdit, saveRecentEdit } from './recent.js';
+import { initHelp } from './helpui.js';
+import { TUTORIALS, meets, stepIndex, firstStep, loadProgress, saveProgress, markDone, resetProgress } from './tutorials.js';
 
 const $app = document.getElementById('app');
 const editHistory = new WeakMap();
@@ -87,6 +89,9 @@ const ICON = {
   prev: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
   next: '<svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>',
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  undo: '<svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/></svg>',
+  redo: '<svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3"/></svg>',
+  help: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></svg>',
 };
 
 const S = {
@@ -118,7 +123,21 @@ const S = {
   gradientJustDrawn: false,
   healMode: false,
   sliderHistoryItem: null,
+  advanced: false,
+  group: 'looks',
+  notice: '',
+  ui: loadUi(),
+  progress: loadProgress(localStorage),
+  tour: null,
 };
+
+function loadUi() {
+  try { return { help: true, hintSeen: false, ...JSON.parse(localStorage.getItem('kadar-ui') || '{}') }; }
+  catch (e) { return { help: true, hintSeen: false }; }
+}
+function saveUi() {
+  try { localStorage.setItem('kadar-ui', JSON.stringify(S.ui)); } catch (e) { /* private mode */ }
+}
 
 function loadSettings() {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('kadar-settings') || '{}') }; }
@@ -146,7 +165,7 @@ let recentSaveTimer;
 function home() {
   const p = S.total ? Math.round(100 * S.done / S.total) : 0;
   return `
-  <div class="top"><h2>Kadar</h2><button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
+  <div class="top"><h2>Kadar</h2><button class="icon" data-act="tutorials" aria-label="Tutorials" data-help="tutorials-open">${ICON.help}</button><button class="icon" data-act="settings" aria-label="Settings" data-help="settings">${ICON.gear}</button></div>
   <main class="home">
     ${S.busy ? `
       <div class="progress" role="status">
@@ -159,10 +178,20 @@ function home() {
         <p>Make an edit, recover a better frame from a series, or review photos you may not need.</p>
       </section>
       <div class="home-actions">
-        <label class="btn primary">${editorFileInput}Choose photos to edit</label>
-        ${S.recentEdit ? `<button class="btn recent-action" data-act="resumeRecent">Resume recent edit <span>${S.recentEdit.count} photos</span></button>` : ''}
-        <label class="btn secondary">${fileInput}Review a series</label>
+        <label class="btn primary" data-help="home-choose">${editorFileInput}Choose photos to edit</label>
+        ${S.recentEdit ? `<button class="btn recent-action" data-act="resumeRecent" data-help="home-resume">Resume recent edit <span>${S.recentEdit.count} photos</span></button>` : ''}
+        <label class="btn secondary" data-help="home-review">${fileInput}Review a series</label>
+        <button class="btn secondary" data-act="sampleEdit" data-help="sample-photo">Try with sample photo</button>
       </div>
+      <ul class="home-guide">
+        <li><b>Choose photos to edit</b> adjusts light, colour and crop on your own pictures.</li>
+        <li><b>Review a series</b> compares a burst of similar shots and suggests which to keep.</li>
+      </ul>
+      ${S.progress.dismissed ? '' : `<div class="tour-prompt" role="region" aria-label="Welcome tour">
+        <span>New here? Take the 60-second tour.</span>
+        <button class="btn primary" data-act="tourStart" data-id="first-edit" data-help="tour-start">Start tour</button>
+        <button class="btn" data-act="tourDismiss" data-help="tour-dismiss">Not now</button>
+      </div>`}
       <p class="library-note">Choose photos from your library when prompted. Kadar can’t browse or delete your library in the background.</p>`}
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
     ${S.recentError ? `<p class="err" role="status">${esc(S.recentError)}</p>` : ''}
@@ -174,8 +203,9 @@ function seriesScreen() {
   const k = keepers().length, d = deletes().length;
   return `
   <div class="top"><h2>Kadar</h2>
-    <label class="icon" aria-label="Select photos">${fileInput}${ICON.plus}</label>
-    <button class="icon" data-act="settings" aria-label="Settings">${ICON.gear}</button></div>
+    <label class="icon" aria-label="Select photos" data-help="add-photos">${fileInput}${ICON.plus}</label>
+    <button class="icon" data-act="tutorials" aria-label="Tutorials" data-help="tutorials-open">${ICON.help}</button>
+    <button class="icon" data-act="settings" aria-label="Settings" data-help="settings">${ICON.gear}</button></div>
   <div class="summary">
     <div class="stat"><b class="num">${all}</b><span>Photos</span></div>
     <div class="stat"><b class="num">${S.series.length}</b><span>Series</span></div>
@@ -184,13 +214,13 @@ function seriesScreen() {
     ${S.skipped ? `<div class="stat"><b class="num">${S.skipped}</b><span>Skipped</span></div>` : ''}
   </div>
   <div class="actions">
-    <button class="btn primary" data-act="save" ${k ? '' : 'disabled'}>Save keepers</button>
-    <button class="btn" data-act="deletes" ${d ? '' : 'disabled'}>Review delete suggestions</button>
+    <button class="btn primary" data-act="save" data-help="save-keepers" ${k ? '' : 'disabled'}>Save keepers</button>
+    <button class="btn" data-act="deletes" data-help="review-deletes" ${d ? '' : 'disabled'}>Review delete suggestions</button>
   </div>
   <div class="list">
     ${S.series.map((s, i) => {
       const sk = s.items.filter(x => decide(x) === 'keep').length;
-      return `<button class="row" data-act="open" data-s="${i}">
+      return `<button class="row" data-act="open" data-s="${i}" data-help="series-row">
         <span class="sn num">${s.id}</span>
         <span class="strip">${s.items.slice(0, 3).map(it => frame(it)).join('')}${s.items.length > 3 ? `<span class="more num">+${s.items.length - 3}</span>` : ''}</span>
         <span class="counts"><span class="k">Keep ${sk}</span><span class="d">Delete ${s.items.length - sk}</span></span>
@@ -208,10 +238,10 @@ function reviewScreen() {
   const ar = it.w / it.h;
   return `
   <div class="top">
-    <button class="icon" data-act="home" aria-label="Back">${ICON.back}</button>
+    <button class="icon" data-act="home" aria-label="Back" data-help="back">${ICON.back}</button>
     <h2>Review series <span class="num">${s.id}</span> / <span class="num">${S.series.length}</span></h2>
-    <button class="icon" data-act="ps" aria-label="Previous series" ${S.si ? '' : 'disabled'}>${ICON.prev}</button>
-    <button class="icon" data-act="ns" aria-label="Next series" ${S.si < S.series.length - 1 ? '' : 'disabled'}>${ICON.next}</button>
+    <button class="icon" data-act="ps" data-help="prev-series" aria-label="Previous series" ${S.si ? '' : 'disabled'}>${ICON.prev}</button>
+    <button class="icon" data-act="ns" data-help="next-series" aria-label="Next series" ${S.si < S.series.length - 1 ? '' : 'disabled'}>${ICON.next}</button>
   </div>
   <div class="stage">
     <div class="photo" id="photo" style="aspect-ratio:${ar};width:min(100%, calc(58dvh * ${ar}))">
@@ -221,18 +251,19 @@ function reviewScreen() {
     </div>
   </div>
   <div class="bar2">
-    <div class="chips">${(it.reasons || []).map(r => `<span class="chip ${r === 'Face' ? 'face' : r === 'Duplicate' ? '' : 'bad'}">${r}</span>`).join('')}</div>
+    <div class="chips">${(it.reasons || []).map(r => `<span class="chip ${r === 'Face' ? 'face' : r === 'Duplicate' ? '' : 'bad'}" data-help="chip-${r.toLowerCase()}" tabindex="0">${r}</span>`).join('')}</div>
     <div class="seg decide" role="group" aria-label="Decision">
-      <button data-act="decide" data-v="keep" aria-pressed="${d === 'keep'}">Keep</button>
-      <button data-act="decide" data-v="delete" aria-pressed="${d === 'delete'}">Delete</button>
+      <button data-act="decide" data-v="keep" data-help="decide-keep" aria-pressed="${d === 'keep'}">Keep</button>
+      <button data-act="decide" data-v="delete" data-help="decide-delete" aria-pressed="${d === 'delete'}">Delete</button>
     </div>
-    <button class="btn" data-act="edit">Edit</button>
+    <button class="btn" data-act="edit" data-help="edit">Edit</button>
   </div>
+  <p class="review-note">Keep frames are saved with Save keepers. Delete frames are only suggestions for you to remove in Photos. Hold a coloured chip to see what it means.</p>
   ${faces.length ? `<div class="faces">${faces.map(f => {
     const iss = faceIssues(f, st);
     return `<span class="face ${iss.length ? 'bad' : ''}"><img src="${f.thumb}" alt="">${iss[0] || ''}</span>`;
   }).join('')}</div>` : ''}
-  <div class="film" id="film">${s.items.map((x, k) => `<button data-act="frame" data-f="${k}" aria-label="Frame ${x.frame}">${frame(x, k === S.fi ? 'cur' : '')}</button>`).join('')}</div>`;
+  <div class="film" id="film">${s.items.map((x, k) => `<button data-act="frame" data-f="${k}" data-help="frame" aria-label="Frame ${x.frame}">${frame(x, k === S.fi ? 'cur' : '')}</button>`).join('')}</div>`;
 }
 
 function editorScreen() {
@@ -250,17 +281,19 @@ function editorScreen() {
   const faceSources = edits.faceSources || [];
   const fusion = edits.fusion;
   const history = historyFor(it);
+  const adv = S.advanced;
+  const grp = id => S.group === id ? 'open' : '';
   const dimensions = orientedDimensions(it);
   const crop = cropRect(dimensions.width, dimensions.height, edits.crop, edits);
   const aspect = crop.width / crop.height;
   const controls = [
-    ['exposure', 'Exposure', -2, 2, 0.1, `${Number(shownEdits.exposure || 0).toFixed(1)} EV`],
+    ['exposure', 'Brightness (Exposure)', -2, 2, 0.1, `${Number(shownEdits.exposure || 0).toFixed(1)} EV`],
     ['contrast', 'Contrast', -50, 50, 1, `${Number(shownEdits.contrast || 0)}%`],
     ['highlights', 'Highlights', -100, 100, 1, `${Number(shownEdits.highlights || 0)}%`],
     ['shadows', 'Shadows', -100, 100, 1, `${Number(shownEdits.shadows || 0)}%`],
-    ['temperature', 'Temperature', -100, 100, 1, `${Number(shownEdits.temperature || 0)}`],
+    ['temperature', 'Warmth (Temperature)', -100, 100, 1, `${Number(shownEdits.temperature || 0)}`],
     ['tint', 'Tint', -100, 100, 1, `${Number(shownEdits.tint || 0)}`],
-    ['saturation', 'Colour', 0, 200, 1, `${Number(shownEdits.saturation ?? 100)}%`],
+    ['saturation', 'Colour intensity (Saturation)', 0, 200, 1, `${Number(shownEdits.saturation ?? 100)}%`],
     ['sharpness', 'Sharpen', 0, 2, 0.1, `${Number(shownEdits.sharpness || 0).toFixed(1)}`],
   ];
   const focusPerson = edits.focusPerson;
@@ -269,174 +302,183 @@ function editorScreen() {
   const depthMap = edits.focusDepthMap;
   return `
   <div class="top">
-    <button class="icon" data-act="editorBack" aria-label="Back">${ICON.back}</button>
-    <h2>${seriesFeatures ? `Edit / fix frame <span class="num">${it.frame}</span>` : `Edit photo${items.length > 1 ? ` <span class="num">${index + 1} / ${items.length}</span>` : ''}`}</h2>
-    <div class="seg" role="group" aria-label="Before and after">
-      <button data-act="compare" data-v="before" aria-pressed="${S.compare === 'before'}">Before</button>
-      <button data-act="compare" data-v="after" aria-pressed="${S.compare === 'after'}">After</button>
-    </div>
+    <button class="icon" data-act="editorBack" aria-label="Back" data-help="back">${ICON.back}</button>
+    <h2>Edit photo${items.length > 1 ? ` <span class="num">${index + 1}</span> of <span class="num">${items.length}</span>` : ''}</h2>
+    <button class="icon" data-act="tutorials" aria-label="Tutorials" data-help="tutorials-open">${ICON.help}</button>
   </div>
+  <div class="editor-sticky">
   <div class="editor-history">
-    <button class="btn" data-act="undo" ${history.undo.length ? '' : 'disabled'}>Undo</button>
-    <button class="btn" data-act="redo" ${history.redo.length ? '' : 'disabled'}>Redo</button>
-    <button class="btn" data-act="resetAll" ${Object.keys(edits).length ? '' : 'disabled'}>Reset all</button>
+    <div class="seg" role="group" aria-label="Before and after">
+      <button data-act="compare" data-v="before" data-help="compare-before" aria-pressed="${S.compare === 'before'}">Before</button>
+      <button data-act="compare" data-v="after" data-help="compare-after" aria-pressed="${S.compare === 'after'}">After</button>
+    </div>
+    <button class="btn" data-act="undo" data-help="undo" ${history.undo.length ? '' : 'disabled'}>${ICON.undo}Undo</button>
+    <button class="btn" data-act="redo" data-help="redo" ${history.redo.length ? '' : 'disabled'}>${ICON.redo}Redo</button>
   </div>
   <div class="stage editor-stage">
-    <div class="editor-photo ${S.focusBrush && focusMask || S.localBrush || S.localGradientMode || S.healMode ? 'brushing' : ''}" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(52dvh * ${aspect}))">
+    <div class="editor-photo ${S.focusBrush && focusMask || S.localBrush || S.localGradientMode || S.healMode ? 'brushing' : ''}" style="aspect-ratio:${crop.width}/${crop.height};width:min(100%,calc(40dvh * ${aspect}))" data-help="editor-photo">
       <img id="editorOriginal" src="${it.viewUrl}" alt="Original frame" ${S.compare === 'after' ? 'hidden' : ''}>
       <canvas id="editorCanvas" aria-label="Edited frame" ${S.compare === 'before' ? 'hidden' : ''}></canvas>
     </div>
   </div>
+  ${editorHint(edits, focusMask, focusMode)}
+  </div>
   ${!seriesFeatures && items.length > 1 ? `<div class="editor-nav">
-    <button class="btn" data-act="editorPrev" ${index ? '' : 'disabled'}>${ICON.prev}Previous</button>
+    <button class="btn" data-act="editorPrev" data-help="editor-prev" ${index ? '' : 'disabled'}>${ICON.prev}Previous</button>
     <span class="num">${index + 1} / ${items.length}</span>
-    <button class="btn" data-act="editorNext" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
+    <button class="btn" data-act="editorNext" data-help="editor-next" ${index < items.length - 1 ? '' : 'disabled'}>Next${ICON.next}</button>
   </div>` : ''}
-  <details class="edit-group looks-group" open>
-    <summary>Looks</summary>
+  <div class="mode-row"><div class="seg" role="group" aria-label="Editing tools">
+    <button data-act="advanced" data-v="0" data-help="advanced-toggle" aria-pressed="${!adv}">Simple</button>
+    <button data-act="advanced" data-v="1" data-help="advanced-toggle" aria-pressed="${adv}">Advanced</button>
+  </div>
+  <button class="btn" data-act="resetAll" data-help="reset-all" ${Object.keys(edits).length ? '' : 'disabled'}>Reset all</button></div>
+  <details class="edit-group looks-group" data-group="looks" ${grp('looks')}>
+    <summary data-help="group-looks">Looks</summary>
     <div class="look-list">${allLooks().map(look =>
-      `<button class="btn" data-act="look" data-v="${esc(look.id)}" aria-pressed="${(edits.look || 'natural') === look.id}">${esc(look.name[0].toUpperCase() + look.name.slice(1))}</button>`).join('')}</div>
+      `<button class="btn" data-act="look" data-help="look" data-v="${esc(look.id)}" aria-pressed="${(edits.look || 'natural') === look.id}">${esc(look.name[0].toUpperCase() + look.name.slice(1))}</button>`).join('')}</div>
     ${selectedLook && selectedLook.id.startsWith('custom-') ? `
-      <div class="manage-look"><input id="renameLook" type="text" maxlength="24" value="${esc(selectedLook.name)}" aria-label="Rename selected look">
-        <button class="btn" data-act="renameLook">Rename</button>
-        <button class="btn" data-act="deleteLook">Delete</button></div>` : ''}
-    <div class="save-look"><input id="lookName" type="text" maxlength="24" placeholder="Name this look" aria-label="Name this look">
-      <button class="btn" data-act="saveLook">Save current look</button></div>
-    <label class="adjust"><span>Look strength<output data-value="lookAmount">${Number(edits.lookAmount ?? 100)}%</output><button class="reset-control" data-act="resetControl" data-k="lookAmount">Reset</button></span>
+      <div class="manage-look"><input id="renameLook" type="text" maxlength="24" value="${esc(selectedLook.name)}" aria-label="Rename selected look" data-help="rename-look">
+        <button class="btn" data-act="renameLook" data-help="rename-look">Rename</button>
+        <button class="btn" data-act="deleteLook" data-help="delete-look">Delete look</button></div>` : ''}
+    <div class="save-look"><input id="lookName" type="text" maxlength="24" placeholder="Name this look" aria-label="Name this look" data-help="look-name">
+      <button class="btn" data-act="saveLook" data-help="save-look">Save current look</button></div>
+    <label class="adjust" data-help="slider-lookAmount"><span>Look strength<output data-value="lookAmount">${Number(edits.lookAmount ?? 100)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="lookAmount">Reset</button></span>
       <input type="range" data-adjust="lookAmount" min="0" max="100" step="1" value="${edits.lookAmount ?? 100}"></label>
   </details>
-  <details class="edit-group" open>
-    <summary>Light</summary>
+  <details class="edit-group" data-group="light" ${grp('light')}>
+    <summary data-help="group-light">Light</summary>
     ${controls.slice(0, 4).map(([key, label, min, max, step, value]) => `
-      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+      <label class="adjust" data-help="slider-${key}"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? 0}"></label>`).join('')}
-    <details class="curve-editor">
+    ${adv ? `<details class="curve-editor">
       <summary>Tone curve · edit points</summary>
-      <svg class="tone-curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve preview">
+      <svg class="tone-curve" data-help="tone-curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve preview">
         <path d="M0 0V100H100" class="tone-curve-grid"></path>
         <polyline points="${tonePoints.map((value, point) => `${point * 25},${100 - value}`).join(' ')}"></polyline>
       </svg>
       ${['Shadows', 'Darks', 'Midtones', 'Lights', 'Highlights'].map((label, index) => {
         const value = tonePoints[index];
-        return `<label class="adjust"><span>${label}<output data-value="tonePoint${index}">${value}%</output><button class="reset-control" data-act="resetTonePoint" data-i="${index}">Reset</button></span>
+        return `<label class="adjust" data-help="slider-tonePoint"><span>${label}<output data-value="tonePoint${index}">${value}%</output><button class="reset-control" data-help="reset-control" data-act="resetTonePoint" data-i="${index}">Reset</button></span>
           <input type="range" data-tone-point="${index}" min="0" max="100" step="1" value="${value}"></label>`;
       }).join('')}
-    </details>
+    </details>` : ''}
   </details>
-  <details class="edit-group">
-    <summary>Color</summary>
+  <details class="edit-group" data-group="colour" ${grp('colour')}>
+    <summary data-help="group-colour">Colour</summary>
     ${controls.slice(4, 7).map(([key, label, min, max, step, value]) => `
-      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+      <label class="adjust" data-help="slider-${key}"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? (key === 'saturation' ? 100 : 0)}"></label>`).join('')}
-    <details class="hsl-group">
-      <summary>Color mix · HSL</summary>
+    ${adv ? `<details class="hsl-group" data-help="hsl-group">
+      <summary>Colour mix · HSL</summary>
       ${HSL_NAMES.map(name => `<details class="hsl-channel"><summary>${name}</summary>
         ${[['Hue', -180, 180, '°'], ['Saturation', -100, 100, '%'], ['Luminance', -100, 100, '%']].map(([axis, min, max, unit]) => {
           const key = `hsl${name}${axis}`;
           const value = Number(shownEdits[key] || 0);
-          return `<label class="adjust"><span>${axis}<output data-value="${key}">${value}${unit}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+          return `<label class="adjust" data-help="slider-hsl-${axis.toLowerCase()}"><span>${axis}<output data-value="${key}">${value}${unit}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
             <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="1" value="${value}"></label>`;
         }).join('')}
       </details>`).join('')}
-    </details>
+    </details>` : ''}
   </details>
-  <details class="edit-group">
-    <summary>Detail and retouch</summary>
+  ${adv ? `<details class="edit-group" data-group="detail" ${grp('detail')}>
+    <summary data-help="group-detail">Detail and retouch</summary>
     ${controls.slice(7).map(([key, label, min, max, step, value]) => `
-      <label class="adjust"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
+      <label class="adjust" data-help="slider-${key}"><span>${label}<output data-value="${key}">${value}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${key}">Reset</button></span>
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${edits[key] ?? 0}"></label>`).join('')}
     <div class="focus-actions">
-      <button class="btn" data-act="localBrush" aria-pressed="${S.localBrush}">${S.localBrush ? 'Finish local brush' : 'Brush local exposure'}</button>
-      <button class="btn" data-act="localGradient" aria-pressed="${S.localGradientMode}">${S.localGradientMode ? 'Finish gradient' : 'Add gradient'}</button>
-      <button class="btn" data-act="healMode" aria-pressed="${S.healMode}">${S.healMode ? 'Finish healing' : 'Heal small spot'}</button>
-      ${edits.localMask ? '<button class="btn" data-act="clearLocalMask">Clear local brush</button>' : ''}
-      ${edits.heals?.length ? '<button class="btn" data-act="clearHealing">Clear healing</button>' : ''}
+      <button class="btn" data-act="localBrush" data-help="local-brush" aria-pressed="${S.localBrush}">${S.localBrush ? 'Done painting' : 'Paint local edits'}</button>
+      <button class="btn" data-act="localGradient" data-help="local-gradient" aria-pressed="${S.localGradientMode}">${S.localGradientMode ? 'Done with gradient' : 'Add gradient'}</button>
+      <button class="btn" data-act="healMode" data-help="heal" aria-pressed="${S.healMode}">${S.healMode ? 'Done healing' : 'Heal small spot'}</button>
+      ${edits.localMask ? '<button class="btn" data-act="clearLocalMask" data-help="clear-local-mask">Clear painted edits</button>' : ''}
+      ${edits.heals?.length ? '<button class="btn" data-act="clearHealing" data-help="clear-healing">Clear healing</button>' : ''}
     </div>
     ${S.localBrush || S.localGradientMode ? `
       <p class="depth-note">${S.localGradientMode ? 'Drag to apply local adjustments across a soft gradient.' : 'Paint on the photo to apply local adjustments.'}</p>
-      <label class="adjust"><span>Brush exposure<output data-value="localExposure">${Number(edits.localExposure || 0).toFixed(1)} EV</output><button class="reset-control" data-act="resetControl" data-k="localExposure">Reset</button></span>
+      <label class="adjust" data-help="slider-localExposure"><span>Local brightness<output data-value="localExposure">${Number(edits.localExposure || 0).toFixed(1)} EV</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="localExposure">Reset</button></span>
         <input type="range" data-adjust="localExposure" min="-2" max="2" step="0.1" value="${edits.localExposure || 0}"></label>
-      <label class="adjust"><span>Brush saturation<output data-value="localSaturation">${Number(edits.localSaturation || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localSaturation">Reset</button></span>
+      <label class="adjust" data-help="slider-localSaturation"><span>Local colour intensity<output data-value="localSaturation">${Number(edits.localSaturation || 0)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="localSaturation">Reset</button></span>
         <input type="range" data-adjust="localSaturation" min="-100" max="100" step="1" value="${edits.localSaturation || 0}"></label>
-      <label class="adjust"><span>Brush contrast<output data-value="localContrast">${Number(edits.localContrast || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localContrast">Reset</button></span>
+      <label class="adjust" data-help="slider-localContrast"><span>Local contrast<output data-value="localContrast">${Number(edits.localContrast || 0)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="localContrast">Reset</button></span>
         <input type="range" data-adjust="localContrast" min="-100" max="100" step="1" value="${edits.localContrast || 0}"></label>
-      <label class="adjust"><span>Brush temperature<output data-value="localTemperature">${Number(edits.localTemperature || 0)}</output><button class="reset-control" data-act="resetControl" data-k="localTemperature">Reset</button></span>
+      <label class="adjust" data-help="slider-localTemperature"><span>Local warmth<output data-value="localTemperature">${Number(edits.localTemperature || 0)}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="localTemperature">Reset</button></span>
         <input type="range" data-adjust="localTemperature" min="-100" max="100" step="1" value="${edits.localTemperature || 0}"></label>
-      <label class="adjust"><span>Brush tint<output data-value="localTint">${Number(edits.localTint || 0)}</output><button class="reset-control" data-act="resetControl" data-k="localTint">Reset</button></span>
+      <label class="adjust" data-help="slider-localTint"><span>Local tint<output data-value="localTint">${Number(edits.localTint || 0)}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="localTint">Reset</button></span>
         <input type="range" data-adjust="localTint" min="-100" max="100" step="1" value="${edits.localTint || 0}"></label>
-      <label class="adjust"><span>Brush size<output data-value="localBrushSize">${S.focusBrushSize} px</output></span>
+      <label class="adjust" data-help="slider-brushSize"><span>Brush size<output data-value="localBrushSize">${S.focusBrushSize} px</output></span>
         <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}"></label>` : ''}
     ${S.localGradientMode ? '<p class="depth-note">Drag across the photo to place a soft gradient. Local sliders above tune its effect.</p>' : ''}
-    ${S.localGradientMode ? `<label class="adjust"><span>Gradient softness<output data-value="localGradientFeather">${Number(edits.localGradientFeather ?? 50)}%</output></span>
+    ${S.localGradientMode ? `<label class="adjust" data-help="slider-gradientFeather"><span>Gradient softness<output data-value="localGradientFeather">${Number(edits.localGradientFeather ?? 50)}%</output></span>
       <input type="range" data-adjust="localGradientFeather" min="5" max="100" step="1" value="${edits.localGradientFeather ?? 50}"></label>` : ''}
-    ${edits.localGradient ? '<button class="btn" data-act="clearGradient">Clear gradient</button>' : ''}
+    ${edits.localGradient ? '<button class="btn" data-act="clearGradient" data-help="clear-gradient">Clear gradient</button>' : ''}
     ${S.healMode ? '<p class="depth-note">Tap a small distraction to blend it with nearby colors. This works best on smooth areas; use Undo if it looks wrong.</p>' : ''}
   </details>
-  <details class="edit-group">
-    <summary>Focus</summary>
+  <details class="edit-group" data-group="focus" ${grp('focus')}>
+    <summary data-help="group-focus">Focus</summary>
   <div class="focus-tools">
     <span>${S.focusBrush ? 'Paint the mask · ' : 'Tap photo to focus · '}${focusMode === 'depth'
       ? edits.focusDepth == null ? 'No focus plane selected' : 'Depth plane selected'
       : focusPerson == null ? 'None' : focusPerson ? 'Person' : 'Background'}</span>
     <div class="focus-actions">
       <div class="seg" role="group" aria-label="Focus method">
-        <button data-act="focusMode" data-v="subject" aria-pressed="${focusMode === 'subject'}">Subject</button>
-        <button data-act="focusMode" data-v="depth" aria-pressed="${focusMode === 'depth'}">Depth</button>
+        <button data-act="focusMode" data-v="subject" data-help="focus-subject" aria-pressed="${focusMode === 'subject'}">Subject</button>
+        <button data-act="focusMode" data-v="depth" data-help="focus-depth" aria-pressed="${focusMode === 'depth'}">Depth</button>
       </div>
       ${focusMode === 'depth' ? `
-        <button class="btn" data-act="estimateDepth" ${S.editorFocusing ? 'disabled' : ''}>${S.editorFocusing ? 'Estimating…' : depthMap ? 'Re-estimate depth' : 'Estimate depth'}</button>
-        <button class="btn" data-act="depthOverlay" aria-pressed="${Boolean(edits.depthOverlay)}" ${depthMap ? '' : 'disabled'}>Depth map</button>
+        <button class="btn" data-act="estimateDepth" data-help="estimate-depth" ${S.editorFocusing ? 'disabled' : ''}>${S.editorFocusing ? 'Estimating…' : depthMap ? 'Re-estimate depth' : 'Estimate depth'}</button>
+        <button class="btn" data-act="depthOverlay" data-help="depth-overlay" aria-pressed="${Boolean(edits.depthOverlay)}" ${depthMap ? '' : 'disabled'}>Show depth map</button>
       ` : `
-        <button class="btn" data-act="focusOverlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Mask</button>
-        <button class="btn" data-act="focusBrush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
+        <button class="btn" data-act="focusOverlay" data-help="focus-overlay" aria-pressed="${Boolean(edits.focusOverlay)}" ${focusMask ? '' : 'disabled'}>Show mask</button>
+        <button class="btn" data-act="focusBrush" data-help="focus-brush" aria-pressed="${S.focusBrush}" ${focusMask ? '' : 'disabled'}>Refine mask</button>
       `}
-      <button class="btn" data-act="clearFocus" ${focusMode === 'depth' ? edits.focusDepth == null ? 'disabled' : '' : focusPerson == null ? 'disabled' : ''}>Reset focus</button>
+      <button class="btn" data-act="clearFocus" data-help="clear-focus" ${focusMode === 'depth' ? edits.focusDepth == null ? 'disabled' : '' : focusPerson == null ? 'disabled' : ''}>Reset focus</button>
       ${S.editorFocusing ? `<span role="status">${focusMode === 'depth' ? 'Estimating depth…' : 'Finding focus…'}</span>` : ''}
     </div>
     ${focusMode === 'depth' ? '<p class="depth-note">Depth estimation runs on this device. First use downloads the model; your photo is not uploaded.</p>' : ''}
-    <label class="adjust"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output><button class="reset-control" data-act="resetControl" data-k="focusBlur">Reset</button></span>
+    <label class="adjust" data-help="slider-focusBlur"><span>Blur<output data-value="focusBlur">${Number(edits.focusBlur ?? 12)} px</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="focusBlur">Reset</button></span>
       <input type="range" data-focus-blur min="0" max="24" step="1" value="${edits.focusBlur ?? 12}" ${focusMode === 'depth'
         ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
         : focusPerson == null ? 'disabled' : ''}>
     </label>
-    <label class="adjust"><span>${focusMode === 'depth' ? 'Depth falloff' : 'Edge softness'}<output data-value="focusFeather">${Number(focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0)}${focusMode === 'depth' ? '%' : ' px'}</output><button class="reset-control" data-act="resetControl" data-k="${focusMode === 'depth' ? 'focusDepthFalloff' : 'focusFeather'}">Reset</button></span>
+    <label class="adjust" data-help="slider-${focusMode === 'depth' ? 'focusDepthFalloff' : 'focusFeather'}"><span>${focusMode === 'depth' ? 'Depth falloff' : 'Edge softness'}<output data-value="focusFeather">${Number(focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0)}${focusMode === 'depth' ? '%' : ' px'}</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="${focusMode === 'depth' ? 'focusDepthFalloff' : 'focusFeather'}">Reset</button></span>
       <input type="range" data-focus-feather min="${focusMode === 'depth' ? 2 : 0}" max="${focusMode === 'depth' ? 40 : 24}" step="${focusMode === 'depth' ? 2 : 1}" value="${focusMode === 'depth' ? edits.focusDepthFalloff ?? 12 : edits.focusFeather ?? 0}" ${focusMode === 'depth'
         ? !depthMap || edits.focusDepth == null ? 'disabled' : ''
         : focusPerson == null ? 'disabled' : ''}>
     </label>
     ${focusMode === 'subject' && S.focusBrush && focusMask ? `<div class="focus-actions mask-brush">
       <div class="seg" role="group" aria-label="Brush effect">
-        <button data-act="focusBrushTarget" data-v="sharp" aria-pressed="${S.focusBrushTarget === 'sharp'}">Keep sharp</button>
-        <button data-act="focusBrushTarget" data-v="blur" aria-pressed="${S.focusBrushTarget === 'blur'}">Blur</button>
+        <button data-act="focusBrushTarget" data-v="sharp" data-help="brush-target-sharp" aria-pressed="${S.focusBrushTarget === 'sharp'}">Keep sharp</button>
+        <button data-act="focusBrushTarget" data-v="blur" data-help="brush-target-blur" aria-pressed="${S.focusBrushTarget === 'blur'}">Blur</button>
       </div>
-      <label class="adjust"><span>Brush size <output data-value="focusBrushSize">${S.focusBrushSize} px</output></span>
+      <label class="adjust" data-help="slider-brushSize"><span>Brush size <output data-value="focusBrushSize">${S.focusBrushSize} px</output></span>
         <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}">
       </label>
     </div>` : ''}
   </div>
-  </details>
-  <details class="edit-group">
-    <summary>Crop and rotate</summary>
-  <div class="crop-set"><span>Crop ratio</span><div class="seg" role="group" aria-label="Crop aspect ratio">
+  </details>` : ''}
+  <details class="edit-group" data-group="crop" ${grp('crop')}>
+    <summary data-help="group-crop">Crop and rotate</summary>
+  <div class="crop-set"><span>Crop ratio</span><div class="seg" role="group" aria-label="Crop aspect ratio" data-help="crop-ratio">
   ${[['original', 'Original'], ['square', '1:1'], ['portrait', '4:5'], ['landscape', '3:2'], ['free', 'Free']].map(([value, label]) =>
   `<button data-act="crop" data-v="${value}" aria-pressed="${(edits.crop || 'original') === value}">${label}</button>`).join('')}
   </div></div>
   <div class="focus-actions">
-    <button class="btn" data-act="rotate">Rotate 90°</button>
-    <button class="btn" data-act="flip" aria-pressed="${Boolean(edits.flip)}">Flip horizontal</button>
+    <button class="btn" data-act="rotate" data-help="rotate">Rotate 90°</button>
+    <button class="btn" data-act="flip" data-help="flip" aria-pressed="${Boolean(edits.flip)}">Flip horizontal</button>
   </div>
-  <label class="adjust"><span>Straighten<output data-value="straighten">${Number(edits.straighten || 0).toFixed(1)}°</output><button class="reset-control" data-act="resetTransform" data-k="straighten">Reset</button></span>
+  <label class="adjust" data-help="slider-straighten"><span>Straighten<output data-value="straighten">${Number(edits.straighten || 0).toFixed(1)}°</output><button class="reset-control" data-help="reset-control" data-act="resetTransform" data-k="straighten">Reset</button></span>
     <input type="range" data-transform="straighten" min="-15" max="15" step="0.1" value="${edits.straighten || 0}"></label>
-  <label class="adjust"><span>Vertical perspective<output data-value="perspectiveV">${Number(edits.perspectiveV || 0)}%</output><button class="reset-control" data-act="resetTransform" data-k="perspectiveV">Reset</button></span>
+  ${adv ? `<label class="adjust" data-help="slider-perspectiveV"><span>Vertical perspective<output data-value="perspectiveV">${Number(edits.perspectiveV || 0)}%</output><button class="reset-control" data-help="reset-control" data-act="resetTransform" data-k="perspectiveV">Reset</button></span>
     <input type="range" data-transform="perspectiveV" min="-30" max="30" step="1" value="${edits.perspectiveV || 0}"></label>
-  <label class="adjust"><span>Horizontal perspective<output data-value="perspectiveH">${Number(edits.perspectiveH || 0)}%</output><button class="reset-control" data-act="resetTransform" data-k="perspectiveH">Reset</button></span>
+  <label class="adjust" data-help="slider-perspectiveH"><span>Horizontal perspective<output data-value="perspectiveH">${Number(edits.perspectiveH || 0)}%</output><button class="reset-control" data-help="reset-control" data-act="resetTransform" data-k="perspectiveH">Reset</button></span>
     <input type="range" data-transform="perspectiveH" min="-30" max="30" step="1" value="${edits.perspectiveH || 0}"></label>
-  <label class="adjust"><span>Crop size<output data-value="cropScale">${Number(edits.scale ?? 100)}%</output><button class="reset-control" data-act="resetControl" data-k="scale">Reset</button></span>
+  ` : ''}
+  <label class="adjust" data-help="slider-cropScale"><span>Crop size<output data-value="cropScale">${Number(edits.scale ?? 100)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="scale">Reset</button></span>
     <input type="range" data-crop="scale" min="20" max="100" step="1" value="${edits.scale ?? 100}"></label>
-  <label class="adjust"><span>Horizontal position<output data-value="cropX">${Number(edits.x ?? 50)}%</output><button class="reset-control" data-act="resetControl" data-k="x">Reset</button></span>
+  ${adv ? `<label class="adjust" data-help="slider-cropX"><span>Horizontal position<output data-value="cropX">${Number(edits.x ?? 50)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="x">Reset</button></span>
     <input type="range" data-crop="x" min="0" max="100" step="1" value="${edits.x ?? 50}"></label>
-  <label class="adjust"><span>Vertical position<output data-value="cropY">${Number(edits.y ?? 50)}%</output><button class="reset-control" data-act="resetControl" data-k="y">Reset</button></span>
-    <input type="range" data-crop="y" min="0" max="100" step="1" value="${edits.y ?? 50}"></label>
+  <label class="adjust" data-help="slider-cropY"><span>Vertical position<output data-value="cropY">${Number(edits.y ?? 50)}%</output><button class="reset-control" data-help="reset-control" data-act="resetControl" data-k="y">Reset</button></span>
+    <input type="range" data-crop="y" min="0" max="100" step="1" value="${edits.y ?? 50}"></label>` : ''}
   </details>
   <p class="err editor-error" role="alert" ${S.editorError ? '' : 'hidden'}>${esc(S.editorError)}</p>
   <div class="editor-actions">
@@ -444,14 +486,17 @@ function editorScreen() {
       <div class="recovery-tools">
         <strong>Fix with this series</strong>
         <span>Start with the sharpest frame. Fusion is for still scenes; moving subjects may ghost.</span>
-        <button class="btn" data-act="pickSharpest" ${sharpest === index ? 'disabled' : ''}>Show sharpest frame</button>
-        <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse still-scene frames'}</button>
+        <button class="btn" data-act="pickSharpest" data-help="pick-sharpest" ${sharpest === index ? 'disabled' : ''}>Show sharpest frame</button>
+        <button class="btn" data-act="${fusion ? 'undoFusion' : 'fuseSeries'}" data-help="${fusion ? 'undo-fusion' : 'fuse'}" ${!fusion && (items.length < 2 || S.editorFusing) ? 'disabled' : ''}>${S.editorFusing ? 'Fusing…' : fusion ? 'Undo fusion' : 'Fuse still-scene frames'}</button>
         ${faceSources.length
-          ? `<button class="btn" data-act="clearFaces">Undo face repair</button>`
-          : `<button class="btn" data-act="bestFaces" ${faceMatches.length ? '' : 'disabled'}>Try sibling-face repair${faceMatches.length ? ` (${faceMatches.length})` : ''}</button>`}
+          ? `<button class="btn" data-act="clearFaces" data-help="clear-faces">Undo face repair</button>`
+          : `<button class="btn" data-act="bestFaces" data-help="best-faces" ${faceMatches.length ? '' : 'disabled'}>Try sibling-face repair${faceMatches.length ? ` (${faceMatches.length})` : ''}</button>`}
       </div>
     ` : ''}
-    <button class="btn primary" data-act="saveEdited" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
+  </div>
+  <div class="save-bar">
+    ${S.notice ? `<p class="notice" role="status">${esc(S.notice)}</p>` : '<p class="save-note">Your original is never changed.</p>'}
+    <button class="btn primary" data-act="saveEdited" data-help="save-copy" ${S.editorSaving ? 'disabled' : ''}>${S.editorSaving ? 'Saving…' : 'Save copy'}</button>
   </div>`;
 }
 
@@ -459,7 +504,7 @@ function deletesScreen() {
   const groups = S.series.map(s => ({ s, del: s.items.filter(i => decide(i) === 'delete') })).filter(g => g.del.length);
   return `
   <div class="top">
-    <button class="icon" data-act="home" aria-label="Back">${ICON.back}</button>
+    <button class="icon" data-act="home" aria-label="Back" data-help="back">${ICON.back}</button>
     <h2>Delete suggestions <span class="num">${deletes().length}</span></h2>
   </div>
   <p class="delete-note">These are your review suggestions, not deleted files. Select and delete photos yourself in your Photos library; Kadar cannot remove them directly.</p>
@@ -473,14 +518,29 @@ function seg(key, opts, labels = opts) {
     `<button data-act="set" data-k="${key}" data-v="${o}" aria-pressed="${String(S.settings[key]) === String(o)}">${labels[i]}</button>`).join('')}</div>`;
 }
 
+function editorHint(edits, focusMask, focusMode) {
+  const hint = S.healMode ? 'Tap a small spot on the photo to heal it.'
+    : S.localGradientMode ? 'Drag across the photo to place a soft gradient, then use the local sliders.'
+    : S.localBrush ? 'Paint over the area you want to change, then use the local sliders.'
+    : S.focusBrush && focusMask ? 'Paint to add or remove the sharp area.'
+    : S.compare === 'before' ? 'Showing the original. Tap After to see your edits.'
+    : '';
+  return hint ? `<p class="hint" role="status">${hint}</p>` : '';
+}
+
 function sheet() {
   const lv = ['off', 'low', 'normal', 'high'], lvL = ['Off', 'Low', 'Normal', 'High'];
   const rows = [['blur', 'Blur'], ['eyes', 'Eyes'], ['expression', 'Expression'], ['away', 'Away'], ['cut', 'Cut'], ['exposure', 'Exposure']];
   return `<div class="sheet" data-act="close"><div data-stop="1" role="dialog" aria-label="Settings">
-    <div class="set"><span>Keep per series</span>${seg('keep', [1, 2, 3], ['1', '2', '3'])}</div>
-    <div class="set"><span>Grouping</span>${seg('grouping', ['loose', 'normal', 'strict'], ['Loose', 'Normal', 'Strict'])}</div>
-    ${rows.map(([k, l]) => `<div class="set"><span>${l}</span>${seg(k, lv, lvL)}</div>`).join('')}
-    <div class="done"><button class="btn primary" data-act="close">Done</button></div>
+    <div class="set" data-help="setting-keep"><span>Keep per series</span>${seg('keep', [1, 2, 3], ['1', '2', '3'])}</div>
+    <div class="set" data-help="setting-grouping"><span>Grouping</span>${seg('grouping', ['loose', 'normal', 'strict'], ['Loose', 'Normal', 'Strict'])}</div>
+    ${rows.map(([k, l]) => `<div class="set" data-help="setting-flag"><span>${l}</span>${seg(k, lv, lvL)}</div>`).join('')}
+    <div class="set" data-help="help-toggle"><span>Long-press help</span><div class="seg" role="group">
+      <button data-act="helpOn" data-v="1" aria-pressed="${S.ui.help}">On</button>
+      <button data-act="helpOn" data-v="0" aria-pressed="${!S.ui.help}">Off</button></div></div>
+    <div class="set"><button class="btn" data-act="tutorials" data-help="tutorials-open">Tutorials</button>
+      <button class="btn" data-act="tutorialsReset" data-help="tutorials-reset">Reset tutorials</button></div>
+    <div class="done"><button class="btn primary" data-act="close" data-help="close">Done</button></div>
   </div></div>`;
 }
 
@@ -498,6 +558,12 @@ function render() {
   }
   if (S.screen === 'editor') renderEditorPreview();
   if (S.screen === 'editor' && S.editorMode === 'photos') scheduleRecentEditSave();
+  if (S.screen === 'editor' && !S.ui.hintSeen && S.ui.help) {
+    S.ui.hintSeen = true;
+    saveUi();
+    toast('Tip: hold any button or slider to learn what it does.');
+  }
+  updateTour();
 }
 
 // ---------- actions ----------
@@ -598,7 +664,7 @@ async function openPhotosForEditing(files) {
 function scheduleRecentEditSave() {
   clearTimeout(recentSaveTimer);
   recentSaveTimer = setTimeout(async () => {
-    if (!S.editItems.length) return;
+    if (!S.editItems.length || S.editItems.some(item => item.sample)) return;
     try {
       await saveRecentEdit(S.editItems, S.editIndex);
       S.recentEdit = { count: S.editItems.length, updatedAt: Date.now() };
@@ -1486,6 +1552,17 @@ $app.addEventListener('click', e => {
     'bestFaces', 'clearFaces', 'fuseSeries', 'undoFusion',
   ].includes(a)) recordUndo(editorItem());
   if (a === 'settings') { S.sheet = true; render(); }
+  else if (a === 'advanced') { S.advanced = t.dataset.v === '1'; if (!S.advanced && ['detail', 'focus'].includes(S.group)) S.group = 'light'; render(); }
+  else if (a === 'helpOn') { S.ui.help = t.dataset.v === '1'; saveUi(); render(); }
+  else if (a === 'tutorials') { S.sheet = false; S.tour = { list: true }; render(); }
+  else if (a === 'tutorialsReset') { S.progress = resetProgress(); saveProgress(localStorage, S.progress); toast('Tutorials reset.'); render(); }
+  else if (a === 'tourDismiss') { S.progress = { ...S.progress, dismissed: true }; saveProgress(localStorage, S.progress); render(); }
+  else if (a === 'tourStart') { startTutorial(t.dataset.id); }
+  else if (a === 'tourNext') tourMove(1);
+  else if (a === 'tourBack') tourMove(-1);
+  else if (a === 'tourSkip') endTour(false);
+  else if (a === 'tourClose') { S.tour = null; render(); }
+  else if (a === 'sampleEdit') openSample();
   else if (a === 'close') { S.sheet = false; render(); }
   else if (a === 'resumeRecent') resumeRecentEdit();
   else if (a === 'set') {
@@ -1530,6 +1607,7 @@ $app.addEventListener('click', e => {
   }
   else if (a === 'resetAll') {
     const it = editorItem();
+    if (Object.keys(it.adjustments || {}).length > 6 && !confirm('Remove all edits from this photo? You can still tap Undo afterwards.')) return;
     it.adjustments = { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
     S.focusBrush = false; S.localBrush = false; S.localGradientMode = false; S.healMode = false;
     S.focusPointer = null;
