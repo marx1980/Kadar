@@ -97,6 +97,12 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .photo img{position:absolute;inset:0;width:100%;height:100%;display:block;border-radius:6px}
 .fb{position:absolute;border:1.5px solid rgba(239,236,228,.55);border-radius:6px}
 .fb.bad{border:2px solid var(--reject)}
+.ov{position:absolute;border:2px dashed var(--reject);border-radius:6px;pointer-events:none;box-sizing:border-box}
+.ov.whole{border-radius:0}
+.ov i{position:absolute;left:-2px;top:-2px;transform:translateY(-100%);background:var(--reject);color:#fff;font-style:normal;font-size:12px;padding:1px 6px;border-radius:4px;white-space:nowrap}
+.ov.whole i{top:auto;bottom:-2px;transform:none}
+.ov-blur{border-color:#6BB6FF}.ov-blur i{background:#6BB6FF;color:#000}
+.ov-exposure{border-color:var(--mark)}.ov-exposure i{background:var(--mark);color:#000}
 .badge{position:absolute;left:10px;top:10px;min-width:40px;height:40px;display:grid;place-items:center;font-size:20px;font-weight:700;background:rgba(32,33,36,.72);border-radius:20px;padding:0 10px}
 .badge svg{position:absolute;inset:-6px;width:calc(100% + 12px);height:calc(100% + 12px);overflow:visible}
 .bar2{display:flex;align-items:center;gap:10px;padding:14px var(--gut) 6px;flex-wrap:wrap}

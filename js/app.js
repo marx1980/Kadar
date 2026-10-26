@@ -1,4 +1,4 @@
-import { rankAll, rankSeries, decide, faceIssues, DEFAULTS } from './rank.js';
+import { rankAll, rankSeries, decide, faceIssues, frameOverlays, DEFAULTS } from './rank.js';
 import { adjustPixels, bestFaceSources, colorizeDepth, cropRect, depthAt, depthFocusMask, estimateTranslation, healSpotPixels, isForegroundAt, medianFuse, paintMask, sharpestFrameIndex, warpPerspective } from './editor.js';
 import { loadRecentEdit, saveRecentEdit } from './recent.js';
 import { initHelp } from './helpui.js';
@@ -247,6 +247,7 @@ function reviewScreen() {
     <div class="photo" id="photo" style="aspect-ratio:${ar};width:min(100%, calc(58dvh * ${ar}))">
       <img src="${it.viewUrl}" alt="Frame ${it.frame}">
       ${faces.map(f => `<span class="fb ${faceIssues(f, st).length ? 'bad' : ''}" style="left:${f.box.x * 100}%;top:${f.box.y * 100}%;width:${f.box.w * 100}%;height:${f.box.h * 100}%"></span>`).join('')}
+      ${frameOverlays(it, st).map(o => `<span class="ov ov-${o.kind.toLowerCase()} ${o.whole ? 'whole' : ''}" style="left:${o.box.x * 100}%;top:${o.box.y * 100}%;width:${o.box.w * 100}%;height:${o.box.h * 100}%"><i>${o.label}</i></span>`).join('')}
       <span class="badge num">${it.frame}${d === 'keep' ? RING : ''}</span>
     </div>
   </div>

@@ -1,3 +1,4 @@
+import { frameOverlays } from '../js/rank.js';
 // Node tests for the pure modules: node tests/run.mjs
 import assert from 'node:assert/strict';
 import { parseExifTime, toSeconds } from '../js/exif.js';
@@ -114,6 +115,13 @@ test('expression: mid-word mouth scores high, smile scores low', () => {
 test('edges and cosine', () => {
   assert.deepEqual(edgesTouched({ x: 0, y: 0.2, w: 0.3, h: 0.3 }, 0.01), { left: true, top: false, right: false, bottom: false });
   assert.ok(Math.abs(cosine([1, 0], [1, 0]) - 1) < 1e-9);
+});
+test('rank: frameOverlays marks regions behind non-face flags', () => {
+  const subject = { x: 0.2, y: 0.2, w: 0.3, h: 0.3 };
+  const o = frameOverlays({ flags: ['Blur', 'Exposure'], subject: { box: subject }, exposure: { clipHi: 0.3, clipLo: 0 } });
+  assert.deepEqual(o.map(x => x.kind), ['Blur', 'Exposure']);
+  assert.deepEqual(o[0].box, subject);
+  assert.ok(o[1].whole);
 });
 test('editor: exposure, contrast and saturation adjust RGB values', () => {
   const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 50, 0, 255]);

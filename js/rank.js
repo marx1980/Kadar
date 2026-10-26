@@ -187,6 +187,31 @@ export function faceIssues(f, st = DEFAULTS) {
   return out;
 }
 
+// Regions of the frame behind each non-face flag, for overlays on the review photo.
+// `box` is null when the issue applies to the whole frame.
+export function frameOverlays(it, st = DEFAULTS) {
+  const out = [];
+  const flags = it.flags || [];
+  const whole = { x: 0, y: 0, w: 1, h: 1 };
+  const subjectBox = it.subject?.box || null;
+  if (flags.includes('Blur')) out.push({ kind: 'Blur', box: subjectBox, label: 'Soft focus' });
+  if (flags.includes('Cut') && st.cut !== 'off') {
+    const m = T.cut[st.cut] ?? T.cut.normal;
+    const touching = significantFaces(it).map(f => f.box).filter(b => { const e = edgesTouched(b, m); return e.left || e.right || e.top || e.bottom; });
+    if (subjectBox) touching.push(subjectBox);
+    touching.forEach(box => out.push({ kind: 'Cut', box, label: 'Cut off' }));
+    if (!touching.length) out.push({ kind: 'Cut', box: null, label: 'Cut off' });
+  }
+  if (flags.includes('Away')) {
+    for (const p of it.persons || []) if (p.box.h >= 0.3 && !p.hasFace) out.push({ kind: 'Away', box: p.box, label: 'Facing away' });
+  }
+  if (flags.includes('Exposure')) {
+    const e = it.exposure || {};
+    out.push({ kind: 'Exposure', box: null, label: (e.clipHi || 0) >= (e.clipLo || 0) ? 'Highlights clipped' : 'Shadows clipped' });
+  }
+  return out.map(o => ({ ...o, whole: !o.box, box: o.box || whole }));
+}
+
 export function rankAll(items, st = DEFAULTS) {
   const series = buildSeries(items, st);
   for (const s of series) rankSeries(s, st);
