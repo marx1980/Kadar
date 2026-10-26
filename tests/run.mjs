@@ -122,6 +122,22 @@ test('editor: default adjustments preserve source pixels', () => {
   adjustPixels(pixels, 1, 1);
   assert.deepEqual([...pixels], [25, 100, 220, 255]);
 });
+test('editor: local exposure brush only changes masked pixels', () => {
+  const pixels = new Uint8ClampedArray([80, 80, 80, 255, 80, 80, 80, 255]);
+  adjustPixels(pixels, 2, 1, {
+    localExposure: 1,
+    localMask: { width: 2, height: 1, data: new Float32Array([1, 0]) },
+  });
+  assert.deepEqual([...pixels], [160, 160, 160, 255, 80, 80, 80, 255]);
+});
+test('editor: white balance and tone controls affect pixel values', () => {
+  const warm = new Uint8ClampedArray([100, 100, 100, 255]);
+  adjustPixels(warm, 1, 1, { temperature: 20 });
+  assert.ok(warm[0] > 100 && warm[2] < 100);
+  const lifted = new Uint8ClampedArray([20, 20, 20, 255]);
+  adjustPixels(lifted, 1, 1, { shadows: 50 });
+  assert.ok(lifted[0] > 20);
+});
 test('editor: unsharp mask increases local edge contrast and preserves alpha', () => {
   const pixels = new Uint8ClampedArray(5 * 5 * 4);
   for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 100, 100, 255], i);
@@ -229,6 +245,8 @@ test('editor: crop presets return centered rectangles at the requested ratio', (
   assert.equal(landscape.width, 400);
   assert.ok(Math.abs(landscape.height - 400 / 1.5) < 1e-9);
   assert.ok(Math.abs(landscape.y - (300 - landscape.height) / 2) < 1e-9);
+  assert.deepEqual(cropRect(400, 300, 'square', { x: 100 }), { x: 100, y: 0, width: 300, height: 300 });
+  assert.deepEqual(cropRect(400, 300, 'free', { scale: 50 }), { x: 100, y: 75, width: 200, height: 150 });
   assert.throws(() => cropRect(0, 300), RangeError);
 });
 

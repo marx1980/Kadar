@@ -4,12 +4,24 @@ import { loadRecentEdit, saveRecentEdit } from './recent.js';
 
 const $app = document.getElementById('app');
 const editHistory = new WeakMap();
-const LOOKS = {
+const BUILT_IN_LOOKS = {
   natural: {},
   warm: { temperature: 14, saturation: 108, contrast: 4 },
   vivid: { saturation: 128, contrast: 8, sharpness: 0.3 },
   mono: { saturation: 0, contrast: 12 },
 };
+function loadCustomLooks() {
+  try {
+    const looks = JSON.parse(localStorage.getItem('kadar-custom-looks') || '[]');
+    return Array.isArray(looks) ? looks.filter(look => look && /^custom-[\w-]+$/.test(look.id) &&
+      typeof look.name === 'string' && look.adjustments && typeof look.adjustments === 'object') : [];
+  } catch { return []; }
+}
+let customLooks = loadCustomLooks();
+const allLooks = () => [...Object.entries(BUILT_IN_LOOKS).map(([id, adjustments]) => ({ id, name: id, adjustments })), ...customLooks];
+function lookById(id) {
+  return allLooks().find(look => look.id === id);
+}
 const cloneEdits = edits => structuredClone(edits || {});
 function historyFor(it) {
   let history = editHistory.get(it);
@@ -26,7 +38,8 @@ function recordUndo(it) {
   history.redo.length = 0;
 }
 function effectiveAdjustments(edits = {}) {
-  const look = LOOKS[edits.look] || {};
+  const selected = lookById(edits.look);
+  const look = selected?.adjustments || {};
   const amount = Math.max(0, Math.min(100, Number(edits.lookAmount ?? 100))) / 100;
   const result = { ...edits };
   for (const [key, value] of Object.entries(look)) {
@@ -243,8 +256,10 @@ function editorScreen() {
   </div>` : ''}
   <details class="edit-group looks-group" open>
     <summary>Looks</summary>
-    <div class="look-list">${Object.keys(LOOKS).map(look =>
-      `<button class="btn" data-act="look" data-v="${look}" aria-pressed="${(edits.look || 'natural') === look}">${look[0].toUpperCase()}${look.slice(1)}</button>`).join('')}</div>
+    <div class="look-list">${allLooks().map(look =>
+      `<button class="btn" data-act="look" data-v="${esc(look.id)}" aria-pressed="${(edits.look || 'natural') === look.id}">${esc(look.name[0].toUpperCase() + look.name.slice(1))}</button>`).join('')}</div>
+    <div class="save-look"><input id="lookName" type="text" maxlength="24" placeholder="Name this look" aria-label="Name this look">
+      <button class="btn" data-act="saveLook">Save current look</button></div>
     <label class="adjust"><span>Look strength<output data-value="lookAmount">${Number(edits.lookAmount ?? 100)}%</output><button class="reset-control" data-act="resetControl" data-k="lookAmount">Reset</button></span>
       <input type="range" data-adjust="lookAmount" min="0" max="100" step="1" value="${edits.lookAmount ?? 100}"></label>
   </details>
@@ -268,12 +283,15 @@ function editorScreen() {
     <div class="focus-actions">
       <button class="btn" data-act="localBrush" aria-pressed="${S.localBrush}">${S.localBrush ? 'Finish local brush' : 'Brush local exposure'}</button>
       <button class="btn" data-act="healMode" aria-pressed="${S.healMode}">${S.healMode ? 'Finish healing' : 'Heal small spot'}</button>
+      ${edits.localMask ? '<button class="btn" data-act="clearLocalMask">Clear local brush</button>' : ''}
       ${edits.heals?.length ? '<button class="btn" data-act="clearHealing">Clear healing</button>' : ''}
     </div>
     ${S.localBrush ? `
       <p class="depth-note">Paint on the photo to apply a local exposure adjustment.</p>
       <label class="adjust"><span>Brush exposure<output data-value="localExposure">${Number(edits.localExposure || 0).toFixed(1)} EV</output><button class="reset-control" data-act="resetControl" data-k="localExposure">Reset</button></span>
         <input type="range" data-adjust="localExposure" min="-2" max="2" step="0.1" value="${edits.localExposure || 0}"></label>
+      <label class="adjust"><span>Brush saturation<output data-value="localSaturation">${Number(edits.localSaturation || 0)}%</output><button class="reset-control" data-act="resetControl" data-k="localSaturation">Reset</button></span>
+        <input type="range" data-adjust="localSaturation" min="-100" max="100" step="1" value="${edits.localSaturation || 0}"></label>
       <label class="adjust"><span>Brush size<output data-value="localBrushSize">${S.focusBrushSize} px</output></span>
         <input type="range" data-focus-brush-size min="4" max="48" step="2" value="${S.focusBrushSize}"></label>` : ''}
     ${S.healMode ? '<p class="depth-note">Tap a small distraction to soften it using nearby pixels. Results vary; use Undo if it looks wrong.</p>' : ''}
@@ -762,6 +780,7 @@ function applyHealing(ctx, spots = []) {
   const image = ctx.getImageData(0, 0, width, height);
   const source = new Uint8ClampedArray(image.data);
   for (const spot of spots) {
+    if (!Number.isFinite(spot.x) || !Number.isFinite(spot.y) || !Number.isFinite(spot.radius)) continue;
     const radius = Math.max(2, Math.min(Math.max(width, height) * 0.08, Number(spot.radius) * width));
     const cx = Math.round(Number(spot.x) * (width - 1));
     const cy = Math.round(Number(spot.y) * (height - 1));
@@ -965,6 +984,9 @@ async function selectFocus(event, photo) {
   const rect = photo.getBoundingClientRect();
   const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
   const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  recordUndo(it);
+  const undo = $app.querySelector('[data-act="undo"]');
+  if (undo) undo.disabled = false;
   S.editorFocusing = true;
   S.editorError = '';
   render();
@@ -1126,6 +1148,8 @@ function stepEditor(df) {
   if (n < 0 || n >= S.editItems.length) return;
   S.editIndex = n;
   S.focusBrush = false;
+  S.localBrush = false;
+  S.healMode = false;
   S.focusPointer = null;
   S.editorError = '';
   render();
@@ -1169,7 +1193,11 @@ $app.addEventListener('input', e => {
   const focusBlur = e.target.closest('[data-focus-blur]');
   if (focusBlur && S.screen === 'editor') {
     const it = editorItem();
-    if (S.sliderHistoryItem !== it) { recordUndo(it); S.sliderHistoryItem = it; }
+    if (S.sliderHistoryItem !== it) {
+      recordUndo(it); S.sliderHistoryItem = it;
+      const undo = $app.querySelector('[data-act="undo"]');
+      if (undo) undo.disabled = false;
+    }
     it.adjustments.focusBlur = Number(focusBlur.value);
     const output = $app.querySelector('[data-value="focusBlur"]');
     if (output) output.textContent = `${focusBlur.value} px`;
@@ -1180,7 +1208,11 @@ $app.addEventListener('input', e => {
   const focusFeather = e.target.closest('[data-focus-feather]');
   if (focusFeather && S.screen === 'editor') {
     const it = editorItem();
-    if (S.sliderHistoryItem !== it) { recordUndo(it); S.sliderHistoryItem = it; }
+    if (S.sliderHistoryItem !== it) {
+      recordUndo(it); S.sliderHistoryItem = it;
+      const undo = $app.querySelector('[data-act="undo"]');
+      if (undo) undo.disabled = false;
+    }
     const depthMode = it.adjustments?.focusMode === 'depth';
     it.adjustments[depthMode ? 'focusDepthFalloff' : 'focusFeather'] = Number(focusFeather.value);
     const output = $app.querySelector('[data-value="focusFeather"]');
@@ -1245,6 +1277,8 @@ $app.addEventListener('pointerdown', e => {
   if (!photo || S.screen !== 'editor' || !(S.focusBrush && editorItem().adjustments?.focusMask || S.localBrush)) return;
   e.preventDefault();
   recordUndo(editorItem());
+  const undo = $app.querySelector('[data-act="undo"]');
+  if (undo) undo.disabled = false;
   S.focusPointer = e.pointerId;
   photo.setPointerCapture(e.pointerId);
   if (S.localBrush) paintLocalMask(e, photo);
@@ -1281,8 +1315,8 @@ $app.addEventListener('click', e => {
   if (t.dataset.act === 'close' && e.target.closest('[data-stop]') && !e.target.closest('button[data-act=close]')) return;
   const a = t.dataset.act;
   if (S.screen === 'editor' && [
-    'crop', 'look', 'rotate', 'flip', 'resetAll', 'resetControl', 'localBrush', 'healMode', 'clearHealing',
-    'focusOverlay', 'focusMode', 'depthOverlay', 'focusBrush', 'focusBrushTarget', 'clearFocus',
+    'crop', 'look', 'rotate', 'flip', 'resetAll', 'resetControl', 'clearHealing', 'clearLocalMask',
+    'focusOverlay', 'focusMode', 'depthOverlay', 'focusBrush', 'clearFocus',
     'bestFaces', 'clearFaces', 'fuseSeries', 'undoFusion',
   ].includes(a)) recordUndo(editorItem());
   if (a === 'settings') { S.sheet = true; render(); }
@@ -1308,7 +1342,7 @@ $app.addEventListener('click', e => {
     S.focusPointer = null;
     S.compare = 'after'; S.editorError = ''; S.screen = 'editor'; render();
   }
-  else if (a === 'editorBack') { S.focusBrush = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
+  else if (a === 'editorBack') { S.focusBrush = false; S.localBrush = false; S.healMode = false; S.focusPointer = null; S.screen = S.editorMode === 'cull' ? 'review' : 'home'; render(); }
   else if (a === 'editorPrev' && S.editorMode === 'photos') stepEditor(-1);
   else if (a === 'editorNext' && S.editorMode === 'photos') stepEditor(1);
   else if (a === 'compare') { S.compare = t.dataset.v; render(); }
@@ -1341,7 +1375,7 @@ $app.addEventListener('click', e => {
     const defaults = {
       exposure: 0, contrast: 0, highlights: 0, shadows: 0, temperature: 0, tint: 0,
       saturation: 100, sharpness: 0, lookAmount: 100, scale: 100, x: 50, y: 50,
-      localExposure: 0, focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
+      localExposure: 0, localSaturation: 0, focusBlur: 12, focusFeather: 0, focusDepthFalloff: 12,
     };
     if (key in defaults) edits[key] = defaults[key];
     if (S.editorMode === 'photos') scheduleRecentEditSave();
@@ -1349,6 +1383,36 @@ $app.addEventListener('click', e => {
   }
   else if (a === 'look') {
     editorItem().adjustments.look = t.dataset.v;
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'saveLook') {
+    const name = ($app.querySelector('#lookName')?.value || '').trim();
+    if (!name) {
+      setEditorError('Enter a name for this look first.');
+      return;
+    }
+    const it = editorItem();
+    recordUndo(it);
+    const adjustments = Object.fromEntries(
+      ['exposure', 'contrast', 'highlights', 'shadows', 'temperature', 'tint', 'saturation', 'sharpness']
+        .map(key => [key, Number(it.adjustments[key] ?? (key === 'saturation' ? 100 : 0))]),
+    );
+    const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    customLooks.push({ id, name: name.slice(0, 24), adjustments });
+    try { localStorage.setItem('kadar-custom-looks', JSON.stringify(customLooks)); }
+    catch { customLooks.pop(); setEditorError('Could not save this look on this device.'); render(); return; }
+    for (const key of Object.keys(adjustments)) {
+      it.adjustments[key] = key === 'saturation' ? 100 : 0;
+    }
+    it.adjustments.look = id;
+    it.adjustments.lookAmount = 100;
+    S.editorError = '';
+    if (S.editorMode === 'photos') scheduleRecentEditSave();
+    render();
+  }
+  else if (a === 'clearLocalMask') {
+    delete editorItem().adjustments.localMask;
     if (S.editorMode === 'photos') scheduleRecentEditSave();
     render();
   }
