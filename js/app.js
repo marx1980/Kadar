@@ -245,6 +245,8 @@ function editorScreen() {
   const edits = it.adjustments || { exposure: 0, contrast: 0, saturation: 100, sharpness: 0, crop: 'original' };
   const shownEdits = effectiveAdjustments(edits);
   const selectedLook = lookById(edits.look);
+  const tonePoints = [0, 25, 50, 75, 100].map((value, point) =>
+    Math.max(0, Math.min(100, Number(shownEdits.tonePoints?.[point] ?? value))));
   const faceSources = edits.faceSources || [];
   const fusion = edits.fusion;
   const history = historyFor(it);
@@ -310,8 +312,12 @@ function editorScreen() {
         <input type="range" data-adjust="${key}" min="${min}" max="${max}" step="${step}" value="${shownEdits[key] ?? 0}"></label>`).join('')}
     <details class="curve-editor">
       <summary>Tone curve · edit points</summary>
+      <svg class="tone-curve" viewBox="0 0 100 100" role="img" aria-label="Tone curve preview">
+        <path d="M0 0V100H100" class="tone-curve-grid"></path>
+        <polyline points="${tonePoints.map((value, point) => `${point * 25},${100 - value}`).join(' ')}"></polyline>
+      </svg>
       ${['Shadows', 'Darks', 'Midtones', 'Lights', 'Highlights'].map((label, index) => {
-        const value = Number(edits.tonePoints?.[index] ?? index * 25);
+        const value = tonePoints[index];
         return `<label class="adjust"><span>${label}<output data-value="tonePoint${index}">${value}%</output><button class="reset-control" data-act="resetTonePoint" data-i="${index}">Reset</button></span>
           <input type="range" data-tone-point="${index}" min="0" max="100" step="1" value="${value}"></label>`;
       }).join('')}
@@ -893,6 +899,12 @@ async function renderEditorPreview() {
       ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) throw new Error('Canvas unavailable');
       ctx.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+      const photo = canvas.closest('.editor-photo');
+      if (photo) {
+        const aspect = crop.width / crop.height;
+        photo.style.aspectRatio = `${crop.width}/${crop.height}`;
+        photo.style.width = `min(100%,calc(52dvh * ${aspect}))`;
+      }
     } finally {
       bitmap.close();
     }

@@ -163,6 +163,16 @@ test('editor: local gradient blends its exposure from start to end', () => {
   assert.ok(pixels[4] > 80 && pixels[4] < 160);
   assert.equal(pixels[8], 80);
 });
+test('editor: local temperature and tint only affect the painted mask', () => {
+  const pixels = new Uint8ClampedArray([100, 100, 100, 255, 100, 100, 100, 255]);
+  adjustPixels(pixels, 2, 1, {
+    localTemperature: 20,
+    localTint: 20,
+    localMask: { width: 2, height: 1, data: new Float32Array([1, 0]) },
+  });
+  assert.ok(pixels[0] > 100 && pixels[1] > 100 && pixels[2] < 100);
+  assert.deepEqual([...pixels.slice(4)], [100, 100, 100, 255]);
+});
 test('editor: spot healing replaces a small outlier from the surrounding median', () => {
   const pixels = new Uint8ClampedArray(9 * 9 * 4);
   for (let i = 0; i < pixels.length; i += 4) pixels.set([100, 120, 140, 255], i);
