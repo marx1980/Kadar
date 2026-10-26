@@ -133,6 +133,15 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .editor-nav{display:flex;align-items:center;justify-content:space-between;padding:8px var(--gut);color:var(--muted)}
 .editor-nav .btn{height:40px;padding:0 14px}
 .editor-nav svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.editor-history{display:flex;gap:8px;padding:4px var(--gut);justify-content:flex-end}
+.editor-history .btn{height:38px;padding:0 14px}
+.editor-history .btn[disabled]{opacity:.4}
+.edit-group{margin:6px var(--gut);padding:0 10px 8px;background:var(--surface);border-radius:10px}
+.edit-group>summary{padding:12px 2px;font-weight:600;cursor:pointer;list-style-position:inside}
+.edit-group .adjust{padding-left:2px;padding-right:2px}
+.look-list{display:flex;gap:8px;overflow-x:auto}
+.look-list .btn{height:40px;padding:0 14px}
+.look-list .btn[aria-pressed=true]{background:var(--mark);color:#26231a}
 .editor-photo{position:relative;margin:0 auto;max-height:52dvh;overflow:hidden;border-radius:6px;background:#1f2022;cursor:crosshair}
 .editor-photo.brushing{touch-action:none}
 .editor-photo img,.editor-photo canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}

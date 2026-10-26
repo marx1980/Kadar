@@ -175,19 +175,33 @@ export function bestFaceSources(items, frameIndex) {
   }).filter(Boolean);
 }
 
-export function cropRect(width, height, preset = 'original') {
+export function cropRect(width, height, preset = 'original', options = {}) {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new RangeError('Image dimensions must be positive');
   }
-  const aspect = { square: 1, portrait: 4 / 5, landscape: 3 / 2 }[preset];
-  if (!aspect) return { x: 0, y: 0, width, height };
+  const cropScale = Math.max(20, Math.min(100, Number(options.scale ?? 100))) / 100;
+  const aspect = preset === 'free' ? width / height : { square: 1, portrait: 4 / 5, landscape: 3 / 2 }[preset];
+  if (!aspect && cropScale === 1) return { x: 0, y: 0, width, height };
   const sourceAspect = width / height;
-  if (sourceAspect > aspect) {
-    const cropWidth = height * aspect;
-    return { x: (width - cropWidth) / 2, y: 0, width: cropWidth, height };
+  let cropWidth, cropHeight;
+  if (!aspect) {
+    cropWidth = width * cropScale;
+    cropHeight = height * cropScale;
+  } else if (sourceAspect > aspect) {
+    cropWidth = height * aspect * cropScale;
+    cropHeight = height * cropScale;
+  } else {
+    cropWidth = width * cropScale;
+    cropHeight = width / aspect * cropScale;
   }
-  const cropHeight = width / aspect;
-  return { x: 0, y: (height - cropHeight) / 2, width, height: cropHeight };
+  const xAlign = Math.max(0, Math.min(1, Number(options.x ?? 50) / 100));
+  const yAlign = Math.max(0, Math.min(1, Number(options.y ?? 50) / 100));
+  return {
+    x: (width - cropWidth) * xAlign,
+    y: (height - cropHeight) * yAlign,
+    width: cropWidth,
+    height: cropHeight,
+  };
 }
 
 export function adjustPixels(data, width, height, adjustments = {}) {
@@ -197,15 +211,40 @@ export function adjustPixels(data, width, height, adjustments = {}) {
   const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
   const saturation = Math.max(0, Math.min(200, Number(adjustments.saturation ?? 100) || 0)) / 100;
   const sharpness = Math.max(0, Math.min(2, Number(adjustments.sharpness) || 0));
+  const temperature = Math.max(-100, Math.min(100, Number(adjustments.temperature) || 0));
+  const tint = Math.max(-100, Math.min(100, Number(adjustments.tint) || 0));
+  const highlights = Math.max(-100, Math.min(100, Number(adjustments.highlights) || 0)) / 100;
+  const shadows = Math.max(-100, Math.min(100, Number(adjustments.shadows) || 0)) / 100;
+  const localMask = adjustments.localMask;
+  const localExposure = Number(adjustments.localExposure) || 0;
+  const localSaturation = Number(adjustments.localSaturation) || 0;
 
   for (let i = 0; i < data.length; i += 4) {
+    const pixelIndex = i / 4;
+    const px = pixelIndex % width;
+    const py = Math.floor(pixelIndex / width);
     let r = (data[i] * exposure - 128) * contrastFactor + 128;
     let g = (data[i + 1] * exposure - 128) * contrastFactor + 128;
     let b = (data[i + 2] * exposure - 128) * contrastFactor + 128;
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const highlightWeight = luminance * luminance;
+    const shadowWeight = (1 - luminance) * (1 - luminance);
+    r += r * highlights * highlightWeight + (255 - r) * shadows * shadowWeight;
+    g += g * highlights * highlightWeight + (255 - g) * shadows * shadowWeight;
+    b += b * highlights * highlightWeight + (255 - b) * shadows * shadowWeight;
+    r += temperature * 0.65 - tint * 0.2;
+    g += tint * 0.35;
+    b -= temperature * 0.65 + tint * 0.2;
     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-    data[i] = gray + (r - gray) * saturation;
-    data[i + 1] = gray + (g - gray) * saturation;
-    data[i + 2] = gray + (b - gray) * saturation;
+    const mask = localMask && localMask.data?.length === localMask.width * localMask.height
+      ? localMask.data[Math.min(localMask.height - 1, Math.floor(py / height * localMask.height)) *
+        localMask.width + Math.min(localMask.width - 1, Math.floor(px / width * localMask.width))]
+      : 0;
+    const localExposureFactor = 2 ** (Math.max(-2, Math.min(2, localExposure)) * mask);
+    const localSat = 1 + Math.max(-1, Math.min(1, localSaturation / 100)) * mask;
+    data[i] = (gray + (r - gray) * saturation * localSat) * localExposureFactor;
+    data[i + 1] = (gray + (g - gray) * saturation * localSat) * localExposureFactor;
+    data[i + 2] = (gray + (b - gray) * saturation * localSat) * localExposureFactor;
   }
   if (!sharpness || !width || !height) return data;
 
